@@ -235,6 +235,10 @@ def build_review_flex_message(parent_name, student_name, user_id):
   )
 
 
+@app.route("/", methods=["GET"])
+def health_check():
+  return "Line Bot is alive!", 200
+
 @app.route('/callback', methods=['POST'])
 def callback():
   signature = request.headers['X-Line-Signature']
