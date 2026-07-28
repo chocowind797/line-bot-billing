@@ -1,5 +1,6 @@
 import datetime
 import json
+import logging  # <--- 已加回 logging 模組
 import os
 from urllib.parse import quote, unquote
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -19,21 +20,23 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, PostbackEvent, TextMessageContent
 import pandas as pd
-import logging
 
 # 載入本機的 .env 檔案
 load_dotenv()
 
 app = Flask(__name__)
 
-# 關閉 Werkzeug 每筆連線的 200 OK 刷屏日誌，讓終端機保持乾淨
+# 【已加回】關閉 Werkzeug 每筆連線的 200 OK 刷屏日誌，讓終端機保持乾淨
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-# 從環境變數讀取 LINE 金鑰與老師 ID
+# 從環境變數讀取 LINE 金鑰、老師 ID 以及圖文選單 ID
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', '')
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', '')
-TEACHER_USER_ID = os.getenv('TEACHER_USER_ID', '')
+teacher_ids_raw = os.getenv('TEACHER_USER_IDS', '')
+TEACHER_USER_IDS = [uid.strip() for uid in teacher_ids_raw.split(',') if uid.strip()]
+TEACHER_RICH_MENU_ID = os.getenv('TEACHER_RICH_MENU_ID', '')
+PARENT_RICH_MENU_ID = os.getenv('PARENT_RICH_MENU_ID', '')
 
 # v3 的 API 與 Handler 初始化方式
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
@@ -87,6 +90,23 @@ def parse_postback_data(data):
       key, value = item.split('=', 1)
       params[key] = unquote(value)
   return params
+
+
+# 動態為使用者切換/綁定對應的 Rich Menu
+def set_user_rich_menu(line_bot_api, user_id):
+  try:
+    if user_id in TEACHER_USER_IDS:
+      if TEACHER_RICH_MENU_ID:
+        line_bot_api.link_rich_menu_id_to_user(
+            user_id=user_id, rich_menu_id=TEACHER_RICH_MENU_ID
+        )
+    else:
+      if PARENT_RICH_MENU_ID:
+        line_bot_api.link_rich_menu_id_to_user(
+            user_id=user_id, rich_menu_id=PARENT_RICH_MENU_ID
+        )
+  except Exception as e:
+    print(f'設定 Rich Menu 發生錯誤: {e}')
 
 
 def build_review_flex_message(parent_name, student_name, user_id):
@@ -192,6 +212,7 @@ def build_review_flex_message(parent_name, student_name, user_id):
 def callback():
   signature = request.headers['X-Line-Signature']
   body = request.get_data(as_text=True)
+  app.logger.info(f"收到 callback 請求，body: {body}")
   try:
     handler.handle(body, signature)
   except InvalidSignatureError:
@@ -210,6 +231,9 @@ def handle_message(event):
   with ApiClient(configuration) as api_client:
     line_bot_api = MessagingApi(api_client)
 
+    # 每次用戶傳送訊息時，自動確保其套用正確的身分圖文選單[cite: 1]
+    set_user_rich_menu(line_bot_api, user_id)
+
     # 取得家長的 LINE 顯示名稱（如果取得失敗則預設為「家長」）
     try:
       profile = line_bot_api.get_profile(user_id)
@@ -218,7 +242,7 @@ def handle_message(event):
       parent_name = '家長'
 
     # 1. 老師專屬指令處理
-    if TEACHER_USER_ID and user_id == TEACHER_USER_ID:
+    if user_id in TEACHER_USER_IDS:
       if text.startswith('審核 '):
         student_name = text.replace('審核 ', '').strip()
         target_user_id = None
@@ -322,7 +346,7 @@ def handle_message(event):
         for uid, s_list in pending_bindings.items():
           for sname in list(s_list):
             if rest.startswith(sname):
-              new_name = rest[len(sname):].strip()
+              new_name = rest[len(sname) :].strip()
               if not new_name:
                 line_bot_api.reply_message(
                     ReplyMessageRequest(
@@ -438,30 +462,28 @@ def handle_message(event):
           )
       )
 
-      if TEACHER_USER_ID:
+      for teacher in TEACHER_USER_IDS:
         flex_message = build_review_flex_message(
             parent_name, student_name, user_id
         )
 
         line_bot_api.push_message(
             push_message_request=PushMessageRequest(
-                to=TEACHER_USER_ID, messages=[flex_message]
+                to=teacher, messages=[flex_message]
             )
         )
       return
 
-    # 【新增】家長解除綁定功能處理
     elif text.startswith('解綁 '):
       student_name = text.replace('解綁 ', '').strip()
       unbound_success = False
 
       if user_id in verified_bindings:
-        # 支援模糊比對或直接符合
         for s in list(verified_bindings[user_id]):
           if student_name in s:
             verified_bindings[user_id].remove(s)
             unbound_success = True
-            student_name = s  # 記錄完整學生名稱
+            student_name = s
             break
 
         if not verified_bindings[user_id]:
@@ -483,21 +505,20 @@ def handle_message(event):
             )
         )
 
-        # 同步通知老師
-        if TEACHER_USER_ID:
-          line_bot_api.push_message(
-              push_message_request=PushMessageRequest(
-                  to=TEACHER_USER_ID,
-                  messages=[
-                      TextMessage(
-                          text=(
-                              f'【解除綁定通知】\n家長 【{parent_name}】'
-                              f' 已自行解除綁定學生：【{student_name}】'
-                          )
-                      )
-                  ],
-              )
-          )
+        for teacher in TEACHER_USER_IDS:
+            line_bot_api.push_message(
+                push_message_request=PushMessageRequest(
+                    to=teacher,
+                    messages=[
+                        TextMessage(
+                            text=(
+                                f'【解除綁定通知】\n家長 【{parent_name}】'
+                                f' 已自行解除綁定學生：【{student_name}】'
+                            )
+                        )
+                    ],
+                )
+            )
       else:
         line_bot_api.reply_message(
             ReplyMessageRequest(
@@ -514,7 +535,6 @@ def handle_message(event):
       return
 
     elif text == '我的綁定':
-      # 讓家長隨時可以查看自己目前綁定了哪些學生
       my_students = verified_bindings.get(user_id, [])
       if not my_students:
         msg = (
@@ -554,7 +574,7 @@ def handle_message(event):
 def handle_postback(event):
   user_id = event.source.user_id
 
-  if TEACHER_USER_ID and user_id != TEACHER_USER_ID:
+  if user_id in TEACHER_USER_IDS:
     return
 
   data = event.postback.data
