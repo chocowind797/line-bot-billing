@@ -1,0 +1,637 @@
+import datetime
+import json
+import os
+from apscheduler.schedulers.background import BackgroundScheduler
+from dotenv import load_dotenv
+from flask import Flask, abort, request
+from linebot.v3 import WebhookHandler
+from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.messaging import (
+    ApiClient,
+    Configuration,
+    FlexContainer,
+    FlexMessage,
+    MessagingApi,
+    PushMessageRequest,
+    ReplyMessageRequest,
+    TextMessage,
+)
+from linebot.v3.webhooks import MessageEvent, PostbackEvent, TextMessageContent
+import pandas as pd
+import logging
+
+# 載入本機的 .env 檔案
+load_dotenv()
+
+app = Flask(__name__)
+
+# 關閉 Werkzeug 每筆連線的 200 OK 刷屏日誌，讓終端機保持乾淨
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
+
+# 從環境變數讀取 LINE 金鑰與老師 ID
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', '')
+LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', '')
+TEACHER_USER_ID = os.getenv('TEACHER_USER_ID', '')
+
+# v3 的 API 與 Handler 初始化方式
+configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_CHANNEL_SECRET)
+
+# 資料儲存檔案路徑（此檔案已被 .gitignore 隔離，不會上傳到 GitHub）
+DATA_FILE_PATH = 'bindings.json'
+EXCEL_FILE_PATH = '薪資計算器2026(NEW).xlsx'
+
+
+# 讀取資料的輔助函式（自動相容舊格式字串與新格式 List）
+def load_data():
+  if os.path.exists(DATA_FILE_PATH):
+    try:
+      with open(DATA_FILE_PATH, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+        pending = data.get('pending', {})
+        verified = data.get('verified', {})
+
+        for uid in list(pending.keys()):
+          if isinstance(pending[uid], str):
+            pending[uid] = [pending[uid]]
+
+        for uid in list(verified.keys()):
+          if isinstance(verified[uid], str):
+            verified[uid] = [verified[uid]]
+
+        return pending, verified
+    except Exception:
+      pass
+  return {}, {}
+
+
+# 儲存資料的輔助函式
+def save_data(pending, verified):
+  data = {'pending': pending, 'verified': verified}
+  with open(DATA_FILE_PATH, 'w', encoding='utf-8') as f:
+    json.dump(data, f, ensure_ascii=False, indent=4)
+
+
+@app.route('/callback', methods=['POST'])
+def callback():
+  signature = request.headers['X-Line-Signature']
+  body = request.get_data(as_text=True)
+  try:
+    handler.handle(body, signature)
+  except InvalidSignatureError:
+    abort(400)
+  return 'OK'
+
+
+# 處理文字訊息事件
+@handler.add(MessageEvent, message=TextMessageContent)
+def handle_message(event):
+  user_id = event.source.user_id
+  text = event.message.text.strip()
+
+  pending_bindings, verified_bindings = load_data()
+
+  with ApiClient(configuration) as api_client:
+    line_bot_api = MessagingApi(api_client)
+
+    # 取得家長的 LINE 顯示名稱（如果取得失敗則預設為「家長」）
+    try:
+      profile = line_bot_api.get_profile(user_id)
+      parent_name = profile.display_name
+    except Exception:
+      parent_name = '家長'
+
+    # 1. 老師專屬指令處理
+    if TEACHER_USER_ID and user_id == TEACHER_USER_ID:
+      if text.startswith('審核 '):
+        student_name = text.replace('審核 ', '').strip()
+        target_user_id = None
+
+        for uid, s_list in pending_bindings.items():
+          if student_name in s_list:
+            target_user_id = uid
+            break
+
+        if target_user_id:
+          pending_bindings[target_user_id].remove(student_name)
+          if not pending_bindings[target_user_id]:
+            del pending_bindings[target_user_id]
+
+          if target_user_id not in verified_bindings:
+            verified_bindings[target_user_id] = []
+          if student_name not in verified_bindings[target_user_id]:
+            verified_bindings[target_user_id].append(student_name)
+
+          save_data(pending_bindings, verified_bindings)
+
+          line_bot_api.reply_message(
+              ReplyMessageRequest(
+                  reply_token=event.reply_token,
+                  messages=[
+                      TextMessage(
+                          text=(
+                              f'已成功將學生 【{student_name}】'
+                              ' 與該家長完成綁定審核！'
+                          )
+                      )
+                  ],
+              )
+          )
+          line_bot_api.push_message(
+              push_message_request=PushMessageRequest(
+                  to=target_user_id,
+                  messages=[
+                      TextMessage(
+                          text=(
+                              f'您的帳號已通過老師審核！\n目前已成功綁定學生：{student_name}'
+                              '，之後將可接收繳費通知。'
+                          )
+                      )
+                  ],
+              )
+          )
+        else:
+          line_bot_api.reply_message(
+              ReplyMessageRequest(
+                  reply_token=event.reply_token,
+                  messages=[
+                      TextMessage(
+                          text=f'找不到學生 【{student_name}】 的待審核申請紀錄。'
+                      )
+                  ],
+              )
+          )
+        return
+
+      elif text == '查看待審核':
+        if not pending_bindings:
+          msg = '目前沒有等待審核的綁定請求。'
+        else:
+          msg = '【待審核清單】\n'
+          for uid, s_list in pending_bindings.items():
+            try:
+              p_profile = line_bot_api.get_profile(uid)
+              p_display = p_profile.display_name
+            except Exception:
+              p_display = '未知家長'
+
+            for sname in s_list:
+              msg += f'- 學生: {sname} (家長: {p_display})\n'
+          msg += '\n請回覆「審核 [學生姓名]」來通過綁定。'
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=msg)],
+            )
+        )
+        return
+
+      elif text == '發送帳單':
+        result_msg = send_bills_logic(line_bot_api, verified_bindings)
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=result_msg)],
+            )
+        )
+        return
+
+    # 2. 一般家長用戶訊息處理
+    # 2. 一般家長用戶訊息處理
+    if text.startswith('我是'):
+      student_name = text.replace('我是', '').strip()
+
+      if user_id not in pending_bindings:
+        pending_bindings[user_id] = []
+
+      if student_name not in pending_bindings[user_id]:
+        pending_bindings[user_id].append(student_name)
+
+      save_data(pending_bindings, verified_bindings)
+
+      line_bot_api.reply_message(
+          ReplyMessageRequest(
+              reply_token=event.reply_token,
+              messages=[
+                  TextMessage(
+                      text=(
+                          f'已收到您的綁定申請，學生姓名：【{student_name}】。\n請等候老師後台審核確認！'
+                      )
+                  )
+              ],
+          )
+      )
+
+      if TEACHER_USER_ID:
+        bubble_content = {
+            'type': 'bubble',
+            'body': {
+                'type': 'box',
+                'layout': 'vertical',
+                'contents': [
+                    {
+                        'type': 'text',
+                        'text': '【新綁定審核通知】',
+                        'weight': 'bold',
+                        'size': 'lg',
+                        'color': '#1DB446',
+                    },
+                    {
+                        'type': 'text',
+                        'text': f'家長名稱：{parent_name}',
+                        'size': 'md',
+                        'weight': 'bold',
+                        'margin': 'md',
+                        'wrap': True,
+                    },
+                    {
+                        'type': 'text',
+                        'text': f'申請綁定學生：{student_name}',
+                        'size': 'md',
+                        'margin': 'sm',
+                        'wrap': True,
+                    },
+                ],
+            },
+            'footer': {
+                'type': 'box',
+                'layout': 'horizontal',
+                'spacing': 'sm',
+                'contents': [
+                    {
+                        'type': 'button',
+                        'style': 'primary',
+                        'color': '#28a745',
+                        'action': {
+                            'type': 'postback',
+                            'label': '同意',
+                            'data': (
+                                f'action=approve&student={student_name}&uid={user_id}'
+                            ),
+                        },
+                    },
+                    {
+                        'type': 'button',
+                        'style': 'primary',
+                        'color': '#dc3545',
+                        'action': {
+                            'type': 'postback',
+                            'label': '拒絕',
+                            'data': (
+                                f'action=reject&student={student_name}&uid={user_id}'
+                            ),
+                        },
+                    },
+                ],
+            },
+        }
+
+        flex_message = FlexMessage(
+            alt_text=(
+                f'【新綁定通知】{parent_name} 申請綁定學生：{student_name}'
+            ),
+            contents=FlexContainer.from_dict(bubble_content),
+        )
+
+        line_bot_api.push_message(
+            push_message_request=PushMessageRequest(
+                to=TEACHER_USER_ID, messages=[flex_message]
+            )
+        )
+      return
+
+    # 【新增】家長解除綁定功能處理
+    elif text.startswith('解綁 '):
+      student_name = text.replace('解綁 ', '').strip()
+      unbound_success = False
+
+      if user_id in verified_bindings:
+        # 支援模糊比對或直接符合
+        for s in list(verified_bindings[user_id]):
+          if student_name in s:
+            verified_bindings[user_id].remove(s)
+            unbound_success = True
+            student_name = s  # 記錄完整學生名稱
+            break
+
+        if not verified_bindings[user_id]:
+          del verified_bindings[user_id]
+
+        save_data(pending_bindings, verified_bindings)
+
+      if unbound_success:
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text=(
+                            f'已成功為您解除綁定學生：【{student_name}】。\n未來將不再接收該學生的繳費通知。'
+                        )
+                    )
+                ],
+            )
+        )
+
+        # 同步通知老師
+        if TEACHER_USER_ID:
+          line_bot_api.push_message(
+              push_message_request=PushMessageRequest(
+                  to=TEACHER_USER_ID,
+                  messages=[
+                      TextMessage(
+                          text=(
+                              f'【解除綁定通知】\n家長 【{parent_name}】'
+                              f' 已自行解除綁定學生：【{student_name}】'
+                          )
+                      )
+                  ],
+              )
+          )
+      else:
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text=(
+                            f'找不到您已綁定學生【{student_name}】的紀錄，請確認輸入是否正確。'
+                        )
+                    )
+                ],
+            )
+        )
+      return
+
+    elif text == '我的綁定':
+      # 讓家長隨時可以查看自己目前綁定了哪些學生
+      my_students = verified_bindings.get(user_id, [])
+      if not my_students:
+        msg = (
+            '您目前尚未成功綁定任何學生。\n若要綁定，請傳送「我是 [學生姓名]」。'
+        )
+      else:
+        msg = '【您目前已綁定的學生】\n'
+        for s in my_students:
+          msg += f'- {s}\n'
+        msg += '\n若要解除綁定，請回傳「解綁 [學生姓名]」。'
+
+      line_bot_api.reply_message(
+          ReplyMessageRequest(
+              reply_token=event.reply_token,
+              messages=[TextMessage(text=msg)],
+          )
+      )
+      return
+
+    # 預設回覆
+    line_bot_api.reply_message(
+        ReplyMessageRequest(
+            reply_token=event.reply_token,
+            messages=[
+                TextMessage(
+                    text=(
+                        '歡迎使用補習班繳費通知系統。\n請傳送「我是 [學生姓名]」來申請綁定帳號。'
+                    )
+                )
+            ],
+        )
+    )
+
+
+# 處理按鈕點擊後的 Postback 事件
+@handler.add(PostbackEvent)
+def handle_postback(event):
+  user_id = event.source.user_id
+
+  if TEACHER_USER_ID and user_id != TEACHER_USER_ID:
+    return
+
+  data = event.postback.data
+  params = dict(
+      item.split('=') for item in data.split('&') if '=' in item
+  )
+  action = params.get('action')
+  student_name = params.get('student')
+  target_user_id = params.get('uid')
+
+  pending_bindings, verified_bindings = load_data()
+
+  with ApiClient(configuration) as api_client:
+    line_bot_api = MessagingApi(api_client)
+
+    if action == 'approve':
+      if (
+          target_user_id in pending_bindings
+          and student_name in pending_bindings[target_user_id]
+      ):
+        pending_bindings[target_user_id].remove(student_name)
+        if not pending_bindings[target_user_id]:
+          del pending_bindings[target_user_id]
+
+        if target_user_id not in verified_bindings:
+          verified_bindings[target_user_id] = []
+        if student_name not in verified_bindings[target_user_id]:
+          verified_bindings[target_user_id].append(student_name)
+
+        save_data(pending_bindings, verified_bindings)
+
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text=f'已成功【同意】學生 【{student_name}】 的綁定申請！'
+                    )
+                ],
+            )
+        )
+        line_bot_api.push_message(
+            push_message_request=PushMessageRequest(
+                to=target_user_id,
+                messages=[
+                    TextMessage(
+                        text=(
+                            f'您的帳號已通過老師審核！\n目前已成功綁定學生：{student_name}'
+                            '，之後將可接收繳費通知。'
+                        )
+                    )
+                ],
+            )
+        )
+      else:
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text=(
+                            f'找不到學生 【{student_name}】'
+                            ' 的待審核紀錄（可能已經審核過了）。'
+                        )
+                    )
+                ],
+            )
+        )
+
+    elif action == 'reject':
+      if (
+          target_user_id in pending_bindings
+          and student_name in pending_bindings[target_user_id]
+      ):
+        pending_bindings[target_user_id].remove(student_name)
+        if not pending_bindings[target_user_id]:
+          del pending_bindings[target_user_id]
+
+        save_data(pending_bindings, verified_bindings)
+
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text=f'已【拒絕】學生 【{student_name}】 的綁定申請。'
+                    )
+                ],
+            )
+        )
+        line_bot_api.push_message(
+            push_message_request=PushMessageRequest(
+                to=target_user_id,
+                messages=[
+                    TextMessage(
+                        text=(
+                            f'很抱歉，您申請綁定的學生 【{student_name}】'
+                            ' 未通過老師審核。如有疑問請與老師聯繫。'
+                        )
+                    )
+                ],
+            )
+        )
+      else:
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text=f'找不到學生 【{student_name}】 的待審核紀錄。'
+                    )
+                ],
+            )
+        )
+
+
+# 核心發送帳單邏輯（以 Excel 內的學生總數為基準進行統計與發送）
+def send_bills_logic(line_bot_api, verified_bindings):
+  if not os.path.exists(EXCEL_FILE_PATH):
+    return f'找不到 Excel 檔案 ({EXCEL_FILE_PATH})，請確認是否已放置於專案中。'
+
+  try:
+    xls = pd.ExcelFile(EXCEL_FILE_PATH)
+    current_month_str = f'{datetime.datetime.now().month}月'
+
+    if current_month_str in xls.sheet_names:
+      target_sheet = current_month_str
+    else:
+      target_sheet = xls.sheet_names[0]
+
+    df = pd.read_excel(xls, sheet_name=target_sheet, header=None)
+
+    # 1. 自動從 Excel 中找出所有學生姓名列（包含 "--" 的列）
+    excel_students = []
+    for r_idx, row in df.iterrows():
+      for c_idx, val in enumerate(row):
+        if pd.notna(val) and '--' in str(val):
+          student_name = str(val).strip()
+          excel_students.append(
+              {'name': student_name, 'row_idx': r_idx, 'col_idx': c_idx}
+          )
+
+    total_count = len(excel_students)
+    sent_count = 0
+
+    if total_count == 0:
+      return f'在【{target_sheet}】中找不到任何學生資料。'
+
+    # 建立反向對應字典
+    student_to_user = {}
+    for user_id, s_list in verified_bindings.items():
+      for s_name in s_list:
+        student_to_user[s_name] = user_id
+
+    # 2. 逐一檢查 Excel 中的每一位學生
+    for student_info in excel_students:
+      student_full_name = student_info['name']
+      r_idx = student_info['row_idx']
+      c_idx = student_info['col_idx']
+
+      matched_user_id = None
+      for bound_name, uid in student_to_user.items():
+        if bound_name in student_full_name:
+          matched_user_id = uid
+          break
+
+      if matched_user_id:
+        hours = '略'
+        salary = '略'
+        subtotal = '略'
+
+        for check_r in range(max(0, r_idx - 3), r_idx):
+          for check_c in range(c_idx, df.shape[1]):
+            header_val = str(df.iloc[check_r, check_c]).strip()
+            if '時數小計' in header_val:
+              hours = df.iloc[r_idx, check_c]
+            elif '薪資' in header_val:
+              salary = df.iloc[r_idx, check_c]
+            elif '單一學生小計' in header_val:
+              subtotal = df.iloc[r_idx, check_c]
+
+        message_content = (
+            f'【{target_sheet} 補習班繳費通知】\n'
+            f'親愛的家長您好，以下是學生【{student_full_name}】的本期明細：\n'
+            f'--------------------\n'
+            f'• 學生姓名：{student_full_name}\n'
+            f'• 上課時數：{hours if pd.notna(hours) else "略"}\n'
+            f'• 薪資/單價：{salary if pd.notna(salary) else "略"}\n'
+            f'• 單一學生小計：{subtotal if pd.notna(subtotal) else "略"} 元\n'
+            f'--------------------\n'
+            f'請查收並於期限內完成繳費，謝謝！'
+        )
+
+        line_bot_api.push_message(
+            push_message_request=PushMessageRequest(
+                to=matched_user_id,
+                messages=[TextMessage(text=message_content)],
+            )
+        )
+        sent_count += 1
+
+    unsent_count = total_count - sent_count
+
+    return (
+        f'【帳單發送統計結果（{target_sheet}）】\n'
+        f'• 成功發送筆數：{sent_count} 筆\n'
+        f'• 未發送筆數：{unsent_count} 筆（尚未綁定家長）\n'
+        f'• 總計學生筆數：{total_count} 筆'
+    )
+  except Exception as e:
+    return f'發送帳單時發生錯誤: {str(e)}'
+
+
+# 背景排程
+scheduler = BackgroundScheduler()
+
+
+@scheduler.scheduled_job('cron', day=1, hour=9, minute=0)
+def scheduled_send_bills():
+  _, verified_bindings = load_data()
+  with ApiClient(configuration) as api_client:
+    line_bot_api = MessagingApi(api_client)
+    send_bills_logic(line_bot_api, verified_bindings)
+
+
+scheduler.start()
+
+if __name__ == '__main__':
+  app.run(host='0.0.0.0', port=5000, debug=True)
