@@ -24,7 +24,11 @@ data = {
         },
         {
             "bounds": {"x": 833, "y": 0, "width": 834, "height": 843},
-            "action": {"type": "message", "label": "說明", "text": "我的綁定"},
+            "action": {
+                "type": "uri",
+                "label": "無功能",
+                "uri": "https://example.com",  # 點擊後不會有任何動作或跳轉
+            },
         },
         {
             "bounds": {"x": 1667, "y": 0, "width": 833, "height": 843},
