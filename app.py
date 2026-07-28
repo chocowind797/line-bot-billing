@@ -1,6 +1,7 @@
 import datetime
 import json
 import os
+from urllib.parse import quote, unquote
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from flask import Flask, abort, request
@@ -71,6 +72,120 @@ def save_data(pending, verified):
   data = {'pending': pending, 'verified': verified}
   with open(DATA_FILE_PATH, 'w', encoding='utf-8') as f:
     json.dump(data, f, ensure_ascii=False, indent=4)
+
+
+def encode_postback_data(**kwargs):
+  return '&'.join(
+      f'{key}={quote(str(value), safe="")}' for key, value in kwargs.items()
+  )
+
+
+def parse_postback_data(data):
+  params = {}
+  for item in data.split('&'):
+    if '=' in item:
+      key, value = item.split('=', 1)
+      params[key] = unquote(value)
+  return params
+
+
+def build_review_flex_message(parent_name, student_name, user_id):
+  rename_prompt = f'改名 {student_name} '
+  bubble_content = {
+      'type': 'bubble',
+      'body': {
+          'type': 'box',
+          'layout': 'vertical',
+          'contents': [
+              {
+                  'type': 'text',
+                  'text': '【新綁定審核通知】',
+                  'weight': 'bold',
+                  'size': 'lg',
+                  'color': '#1DB446',
+              },
+              {
+                  'type': 'text',
+                  'text': f'家長名稱：{parent_name}',
+                  'size': 'md',
+                  'weight': 'bold',
+                  'margin': 'md',
+                  'wrap': True,
+              },
+              {
+                  'type': 'text',
+                  'text': f'申請綁定學生：{student_name}',
+                  'size': 'md',
+                  'margin': 'sm',
+                  'wrap': True,
+              },
+          ],
+      },
+      'footer': {
+          'type': 'box',
+          'layout': 'vertical',
+          'spacing': 'sm',
+          'contents': [
+              {
+                  'type': 'box',
+                  'layout': 'horizontal',
+                  'spacing': 'sm',
+                  'contents': [
+                      {
+                          'type': 'button',
+                          'style': 'primary',
+                          'color': '#28a745',
+                          'action': {
+                              'type': 'postback',
+                              'label': '同意',
+                              'data': encode_postback_data(
+                                  action='approve',
+                                  student=student_name,
+                                  uid=user_id,
+                              ),
+                          },
+                      },
+                      {
+                          'type': 'button',
+                          'style': 'primary',
+                          'color': '#dc3545',
+                          'action': {
+                              'type': 'postback',
+                              'label': '拒絕',
+                              'data': encode_postback_data(
+                                  action='reject',
+                                  student=student_name,
+                                  uid=user_id,
+                              ),
+                          },
+                      },
+                  ],
+              },
+              {
+                  'type': 'button',
+                  'style': 'primary',
+                  'color': '#ffc107',
+                  'action': {
+                      'type': 'postback',
+                      'label': '改名',
+                      'data': encode_postback_data(
+                          action='rename',
+                          student=student_name,
+                          uid=user_id,
+                      ),
+                      'displayText': rename_prompt,
+                      'inputOption': 'openKeyboard',
+                      'fillInText': rename_prompt,
+                  },
+              },
+          ],
+      },
+  }
+
+  return FlexMessage(
+      alt_text=f'【新綁定通知】{parent_name} 申請綁定學生：{student_name}',
+      contents=FlexContainer.from_dict(bubble_content),
+  )
 
 
 @app.route('/callback', methods=['POST'])
@@ -197,6 +312,107 @@ def handle_message(event):
         )
         return
 
+      elif text.startswith('改名 '):
+        rest = text.replace('改名 ', '', 1).strip()
+        renamed = False
+        old_name = ''
+        new_name = ''
+        target_user_id = None
+
+        for uid, s_list in pending_bindings.items():
+          for sname in list(s_list):
+            if rest.startswith(sname):
+              new_name = rest[len(sname):].strip()
+              if not new_name:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[
+                            TextMessage(
+                                text=(
+                                    f'請使用格式「改名 {sname} [新姓名]」'
+                                    '，並補上正確的學生姓名。'
+                                )
+                            )
+                        ],
+                    )
+                )
+                return
+              if new_name in s_list:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[
+                            TextMessage(
+                                text=(
+                                    f'學生姓名 【{new_name}】'
+                                    ' 已存在於此家長的待審核清單中。'
+                                )
+                            )
+                        ],
+                    )
+                )
+                return
+
+              s_list[s_list.index(sname)] = new_name
+              old_name = sname
+              target_user_id = uid
+              renamed = True
+              break
+          if renamed:
+            break
+
+        if renamed:
+          save_data(pending_bindings, verified_bindings)
+          try:
+            p_profile = line_bot_api.get_profile(target_user_id)
+            p_display = p_profile.display_name
+          except Exception:
+            p_display = '家長'
+
+          line_bot_api.reply_message(
+              ReplyMessageRequest(
+                  reply_token=event.reply_token,
+                  messages=[
+                      TextMessage(
+                          text=(
+                              f'已將學生姓名由 【{old_name}】'
+                              f' 修改為 【{new_name}】。'
+                          )
+                      ),
+                      build_review_flex_message(
+                          p_display, new_name, target_user_id
+                      ),
+                  ],
+              )
+          )
+          line_bot_api.push_message(
+              push_message_request=PushMessageRequest(
+                  to=target_user_id,
+                  messages=[
+                      TextMessage(
+                          text=(
+                              f'老師已將您的綁定申請學生姓名'
+                              f'由 【{old_name}】 修正為 【{new_name}】。'
+                              '請等候老師審核確認。'
+                          )
+                      )
+                  ],
+              )
+          )
+        else:
+          line_bot_api.reply_message(
+              ReplyMessageRequest(
+                  reply_token=event.reply_token,
+                  messages=[
+                      TextMessage(
+                          text='找不到符合的待審核學生紀錄，請確認姓名是否正確。'
+                      )
+                  ],
+              )
+          )
+        return
+
     # 2. 一般家長用戶訊息處理
     if text.startswith('我是'):
       student_name = text.replace('我是', '').strip()
@@ -223,74 +439,8 @@ def handle_message(event):
       )
 
       if TEACHER_USER_ID:
-        bubble_content = {
-            'type': 'bubble',
-            'body': {
-                'type': 'box',
-                'layout': 'vertical',
-                'contents': [
-                    {
-                        'type': 'text',
-                        'text': '【新綁定審核通知】',
-                        'weight': 'bold',
-                        'size': 'lg',
-                        'color': '#1DB446',
-                    },
-                    {
-                        'type': 'text',
-                        'text': f'家長名稱：{parent_name}',
-                        'size': 'md',
-                        'weight': 'bold',
-                        'margin': 'md',
-                        'wrap': True,
-                    },
-                    {
-                        'type': 'text',
-                        'text': f'申請綁定學生：{student_name}',
-                        'size': 'md',
-                        'margin': 'sm',
-                        'wrap': True,
-                    },
-                ],
-            },
-            'footer': {
-                'type': 'box',
-                'layout': 'horizontal',
-                'spacing': 'sm',
-                'contents': [
-                    {
-                        'type': 'button',
-                        'style': 'primary',
-                        'color': '#28a745',
-                        'action': {
-                            'type': 'postback',
-                            'label': '同意',
-                            'data': (
-                                f'action=approve&student={student_name}&uid={user_id}'
-                            ),
-                        },
-                    },
-                    {
-                        'type': 'button',
-                        'style': 'primary',
-                        'color': '#dc3545',
-                        'action': {
-                            'type': 'postback',
-                            'label': '拒絕',
-                            'data': (
-                                f'action=reject&student={student_name}&uid={user_id}'
-                            ),
-                        },
-                    },
-                ],
-            },
-        }
-
-        flex_message = FlexMessage(
-            alt_text=(
-                f'【新綁定通知】{parent_name} 申請綁定學生：{student_name}'
-            ),
-            contents=FlexContainer.from_dict(bubble_content),
+        flex_message = build_review_flex_message(
+            parent_name, student_name, user_id
         )
 
         line_bot_api.push_message(
@@ -408,9 +558,7 @@ def handle_postback(event):
     return
 
   data = event.postback.data
-  params = dict(
-      item.split('=') for item in data.split('&') if '=' in item
-  )
+  params = parse_postback_data(data)
   action = params.get('action')
   student_name = params.get('student')
   target_user_id = params.get('uid')
@@ -515,6 +663,40 @@ def handle_postback(event):
                 messages=[
                     TextMessage(
                         text=f'找不到學生 【{student_name}】 的待審核紀錄。'
+                    )
+                ],
+            )
+        )
+
+    elif action == 'rename':
+      if (
+          target_user_id in pending_bindings
+          and student_name in pending_bindings[target_user_id]
+      ):
+        rename_prompt = f'改名 {student_name} '
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text=(
+                            f'請將學生 【{student_name}】 修改為正確姓名。\n'
+                            f'格式：{rename_prompt}[新姓名]'
+                        )
+                    )
+                ],
+            )
+        )
+      else:
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text=(
+                            f'找不到學生 【{student_name}】'
+                            ' 的待審核紀錄（可能已審核或已修改）。'
+                        )
                     )
                 ],
             )
