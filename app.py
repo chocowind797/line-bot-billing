@@ -198,7 +198,6 @@ def handle_message(event):
         return
 
     # 2. 一般家長用戶訊息處理
-    # 2. 一般家長用戶訊息處理
     if text.startswith('我是'):
       student_name = text.replace('我是', '').strip()
 
@@ -522,7 +521,7 @@ def handle_postback(event):
         )
 
 
-# 核心發送帳單邏輯（以 Excel 內的學生總數為基準進行統計與發送）
+# 核心發送帳單邏輯（支援多學生合併發送、單一小計計算以及總金額統計）
 def send_bills_logic(line_bot_api, verified_bindings):
   if not os.path.exists(EXCEL_FILE_PATH):
     return f'找不到 Excel 檔案 ({EXCEL_FILE_PATH})，請確認是否已放置於專案中。'
@@ -549,71 +548,103 @@ def send_bills_logic(line_bot_api, verified_bindings):
           )
 
     total_count = len(excel_students)
-    sent_count = 0
+    sent_student_count = 0
+    grand_total_amount = 0  # 統計全班/全部發送的總金額
 
     if total_count == 0:
       return f'在【{target_sheet}】中找不到任何學生資料。'
 
-    # 建立反向對應字典
-    student_to_user = {}
-    for user_id, s_list in verified_bindings.items():
-      for s_name in s_list:
-        student_to_user[s_name] = user_id
-
-    # 2. 逐一檢查 Excel 中的每一位學生
+    # 建立一個「學生全名 -> 該學生的詳細資料」的對照字典
+    student_data_map = {}
     for student_info in excel_students:
       student_full_name = student_info['name']
       r_idx = student_info['row_idx']
       c_idx = student_info['col_idx']
 
-      matched_user_id = None
-      for bound_name, uid in student_to_user.items():
-        if bound_name in student_full_name:
-          matched_user_id = uid
-          break
+      hours = '略'
+      salary = '略'
+      subtotal = 0
 
-      if matched_user_id:
-        hours = '略'
-        salary = '略'
-        subtotal = '略'
+      for check_r in range(max(0, r_idx - 3), r_idx):
+        for check_c in range(c_idx, df.shape[1]):
+          header_val = str(df.iloc[check_r, check_c]).strip()
+          if '時數小計' in header_val:
+            hours = df.iloc[r_idx, check_c]
+          elif '薪資' in header_val:
+            salary = df.iloc[r_idx, check_c]
+          elif '單一學生小計' in header_val:
+            raw_sub = df.iloc[r_idx, check_c]
+            # 嘗試將小計轉換為數字以便加總，若轉換失敗則為 0
+            try:
+              subtotal = float(raw_sub) if pd.notna(raw_sub) else 0
+            except Exception:
+              subtotal = 0
 
-        for check_r in range(max(0, r_idx - 3), r_idx):
-          for check_c in range(c_idx, df.shape[1]):
-            header_val = str(df.iloc[check_r, check_c]).strip()
-            if '時數小計' in header_val:
-              hours = df.iloc[r_idx, check_c]
-            elif '薪資' in header_val:
-              salary = df.iloc[r_idx, check_c]
-            elif '單一學生小計' in header_val:
-              subtotal = df.iloc[r_idx, check_c]
+      student_data_map[student_full_name] = {
+          'hours': hours if pd.notna(hours) else '略',
+          'salary': salary if pd.notna(salary) else '略',
+          'subtotal': subtotal,
+      }
 
+    matched_excel_students = set()
+
+    # 2. 針對每一位已驗證的家長，檢查他們綁定的學生清單
+    for user_id, bound_student_names in verified_bindings.items():
+      parent_student_details = []
+      parent_total_amount = 0
+
+      for bound_name in bound_student_names:
+        for student_full_name, data in student_data_map.items():
+          if bound_name in student_full_name:
+            parent_student_details.append({
+                'name': student_full_name,
+                'hours': data['hours'],
+                'salary': data['salary'],
+                'subtotal': data['subtotal'],
+            })
+            parent_total_amount += data['subtotal']
+            matched_excel_students.add(student_full_name)
+            grand_total_amount += data['subtotal']
+
+      # 如果這位家長名下有對應到學生，將所有學生的明細合併為一則訊息發出
+      if parent_student_details:
         message_content = (
-            f'【{target_sheet} 補習班繳費通知】\n'
-            f'親愛的家長您好，以下是學生【{student_full_name}】的本期明細：\n'
-            f'--------------------\n'
-            f'• 學生姓名：{student_full_name}\n'
-            f'• 上課時數：{hours if pd.notna(hours) else "略"}\n'
-            f'• 薪資/單價：{salary if pd.notna(salary) else "略"}\n'
-            f'• 單一學生小計：{subtotal if pd.notna(subtotal) else "略"} 元\n'
-            f'--------------------\n'
-            f'請查收並於期限內完成繳費，謝謝！'
+            f'【{target_sheet} 補習班繳費通知】\n親愛的家長您好，以下是您的本期繳費明細：'
         )
+
+        for s_info in parent_student_details:
+          message_content += (
+              f'\n--------------------\n'
+              f'• 學生姓名：{s_info["name"]}\n'
+              f'• 上課時數：{s_info["hours"]}\n'
+              f'• 薪資/單價：{s_info["salary"]}\n'
+              f'• 單一學生小計：{s_info["subtotal"]:g} 元'
+          )
+
+        # 如果家長有多個學生，顯示各別小計的總計金額
+        if len(parent_student_details) > 1:
+          message_content += (
+              f'\n--------------------\n'
+              f'💰 本期應繳總計金額：{parent_total_amount:g} 元'
+          )
+
+        message_content += f'\n--------------------\n請查收並於期限內完成繳費，謝謝！'
 
         line_bot_api.push_message(
             push_message_request=PushMessageRequest(
-                to=matched_user_id,
-                messages=[TextMessage(text=message_content)],
+                to=user_id, messages=[TextMessage(text=message_content)]
             )
         )
-        sent_count += 1
+        sent_student_count += len(parent_student_details)
 
-    unsent_count = total_count - sent_count
+    unsent_count = total_count - len(matched_excel_students)
 
     return (
         f'【帳單發送統計結果（{target_sheet}）】\n'
-        f'• 成功發送筆數：{sent_count} 筆\n'
+        f'• 成功發送學生筆數：{len(matched_excel_students)} 筆\n'
         f'• 未發送筆數：{unsent_count} 筆（尚未綁定家長）\n'
-        f'• 總計學生筆數：{total_count} 筆'
+        f'• 總計學生筆數：{total_count} 筆\n'
+        f'• 本期已發送總金額：{grand_total_amount:g} 元'
     )
   except Exception as e:
     return f'發送帳單時發生錯誤: {str(e)}'
