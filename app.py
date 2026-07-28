@@ -44,8 +44,35 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 # 資料儲存檔案路徑（此檔案已被 .gitignore 隔離，不會上傳到 GitHub）
 DATA_FILE_PATH = 'bindings.json'
-EXCEL_FILE_PATH = '薪資計算器2026(NEW).xlsx'
 
+# 設定資料夾路徑與檔名規則
+DATA_FOLDER = 'data'
+
+def get_current_month_excel_path():
+  # 確保 data 資料夾存在
+  if not os.path.exists(DATA_FOLDER):
+    os.makedirs(DATA_FOLDER)
+
+  # 取得當前年份與月份（例如：2026年7月，會對應檔名包含 2026-07 或 20267 的檔案）
+  now = datetime.datetime.now()
+  year_str = str(now.year)
+  month_str = f'{now.month:02d}'  # 確保是兩位數，例如 07
+
+  # 搜尋 data 資料夾下符合當前年月關鍵字的檔案
+  pattern = os.path.join(DATA_FOLDER, f'*{year_str}*{month_str}*.xlsx')
+  matched_files = glob.glob(pattern)
+
+  if matched_files:
+    # 如果找到符合的檔案，回傳最新的那一個
+    return max(matched_files, key=os.path.getmtime)
+
+  # 如果沒有特定月份的檔案，退而求其次找 data 資料夾下的任何 .xlsx 檔案
+  all_excel_files = glob.glob(os.path.join(DATA_FOLDER, '*.xlsx'))
+  if all_excel_files:
+    return max(all_excel_files, key=os.path.getmtime)
+
+  # 如果真的找不到，回傳一個預設路徑
+  return os.path.join(DATA_FOLDER, f'薪資計算器{year_str}(NEW).xlsx')
 
 # 讀取資料的輔助函式（自動相容舊格式字串與新格式 List）
 def load_data():
@@ -725,8 +752,14 @@ def handle_postback(event):
 
 # 核心發送帳單邏輯（支援多學生合併發送、單一小計計算以及總金額統計）
 def send_bills_logic(line_bot_api, verified_bindings):
-  if not os.path.exists(EXCEL_FILE_PATH):
-    return f'找不到 Excel 檔案 ({EXCEL_FILE_PATH})，請確認是否已放置於專案中。'
+  # 動態取得 data 資料夾下當月的 Excel 檔案路徑
+  excel_file_path = get_current_month_excel_path()
+
+  if not os.path.exists(excel_file_path):
+    return (
+        f'找不到對應月份的 Excel 檔案 ({excel_file_path})，'
+        '請確認是否已放置於 data 資料夾中。'
+    )
 
   try:
     xls = pd.ExcelFile(EXCEL_FILE_PATH)
