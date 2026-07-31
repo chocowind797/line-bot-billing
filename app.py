@@ -190,7 +190,31 @@ def handle_message(event):
     # ==========================
     if user_id in TEACHER_USER_IDS:
       if text == '發送帳單':
+        # 全部發送
         result_msg = send_bills_logic(line_bot_api, verified_bindings)
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text=result_msg)],
+            )
+        )
+        return
+      
+      elif text.startswith('單發帳單'):
+        # 單獨發送，例如輸入 "單發帳單 2601"
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='格式錯誤！請輸入例如：單發帳單 2601')]
+                )
+            )
+            return
+            
+        target_id = parts[1].strip()
+        # 呼叫發送邏輯，並傳入指定的學號
+        result_msg = send_bills_logic(line_bot_api, verified_bindings, target_student_id=target_id)
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
@@ -280,9 +304,8 @@ def handle_message(event):
       return
 
 
-def send_bills_logic(line_bot_api, verified_bindings):
+def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
   excel_file_path = get_current_month_excel_path()
-  print(excel_file_path)
 
   if not os.path.exists(excel_file_path):
     return (
@@ -421,6 +444,12 @@ def send_bills_logic(line_bot_api, verified_bindings):
             bound_id = bound_record.split('--')[0].strip()
         else:
             bound_id = bound_record.strip()
+
+        # ==========================================
+        # 【新增】：如果有指定學號，且目前學號不符，就跳過
+        # ==========================================
+        if target_student_id and bound_id != target_student_id:
+            continue
         
         if bound_id in student_unpaid_map:
           student_data = student_unpaid_map[bound_id]
