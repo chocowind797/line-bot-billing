@@ -383,6 +383,11 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
                 s_id = s_id[:-2]
                 
             if s_id and s_id != '學號' and s_id != 'None':
+                # ==========================================
+                # 【新增】：如果有指定學號，且目前學號不符，就跳過
+                # ==========================================
+                if target_student_id and s_id != target_student_id:
+                    continue
                 raw_name = df.iloc[r_idx, name_col_idx]
                 s_name = str(raw_name).strip() if pd.notna(raw_name) else "未知姓名"
                 
