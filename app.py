@@ -179,6 +179,34 @@ def handle_message(event):
               ],
           )
       )
+
+      # 取得家長的 LINE 顯示名稱
+      try:
+        profile = line_bot_api.get_profile(user_id)
+        parent_name = profile.display_name
+      except Exception:
+        parent_name = '家長'
+
+      # 推播通知給所有老師
+      for teacher_id in TEACHER_USER_IDS:
+        try:
+          line_bot_api.push_message(
+              push_message_request=PushMessageRequest(
+                  to=teacher_id,
+                  messages=[
+                      TextMessage(
+                          text=(
+                              f'【新增綁定通知】🔔\n'
+                              f'家長「{parent_name}」已成功綁定學生：\n'
+                              f'編號：【{student_id}】\n'
+                              f'姓名：【{student_name}】'
+                          )
+                      )
+                  ]
+              )
+          )
+        except Exception as e:
+          print(f"通知老師 {teacher_id} 失敗: {e}")
       return
 
 
