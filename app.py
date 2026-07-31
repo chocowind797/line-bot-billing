@@ -348,13 +348,13 @@ def send_bills_logic(line_bot_api, verified_bindings):
 
       if parent_student_details:
         message_content = (
-            f'【{target_sheet} 補習班繳費通知】\n親愛的家長您好，以下是您的本期繳費明細：'
+            f'親愛的家長您好\n\n跟您報一下'
         )
 
         for s_info in parent_student_details:
           message_content += (
               f'\n--------------------\n'
-              f'• 學生資訊：{s_info["name"]} (編號:{s_info["id"]})\n'
+              f'{s_info["name"]}，{current_month}月份的物理學費：\n\n'
               f'• 上課時數：{s_info["hours"]}\n'
               f'• 薪資/單價：{s_info["salary"]}'
           )
@@ -363,11 +363,11 @@ def send_bills_logic(line_bot_api, verified_bindings):
           if pd.notna(b_fee) and str(b_fee).strip() not in ['', '0', '0.0', 'None']:
               message_content += f'\n• 書籍/教材：{b_fee}'
 
+          message_content += f'\n• 單一學生小計：{s_info["subtotal"]:g} 元'
+
           rmk = s_info.get("remark")
           if pd.notna(rmk) and str(rmk).strip() not in ['', 'None']:
-              message_content += f'\n• 備註：{rmk}'
-
-          message_content += f'\n• 單一學生小計：{s_info["subtotal"]:g} 元'
+              message_content += f'\n• 備註：\n{rmk}'
 
         if len(parent_student_details) > 1:
           message_content += (
@@ -375,7 +375,13 @@ def send_bills_logic(line_bot_api, verified_bindings):
               f'💰 本期應繳總計金額：{parent_total_amount:g} 元'
           )
 
-        message_content += f'\n--------------------\n請查收並於期限內完成繳費，謝謝！'
+        message_content += (f'\n--------------------\n'
+                            f'可使用LINE PAY轉帳或是匯款至\n'
+                            f'玉山銀行代碼(808)帳號0299--979--299866\n'
+                            f'如果是匯款的話\n'
+                            f'匯款完後在請您通知我一下'
+                            f'謝謝您唷，感恩感恩'
+                            )
 
         line_bot_api.push_message(
             push_message_request=PushMessageRequest(
@@ -395,16 +401,16 @@ def send_bills_logic(line_bot_api, verified_bindings):
   except Exception as e:
     return f'發送帳單時發生錯誤: {str(e)}'
 
-scheduler = BackgroundScheduler()
+# scheduler = BackgroundScheduler()
 
-@scheduler.scheduled_job('cron', day=1, hour=9, minute=0)
-def scheduled_send_bills():
-  verified_bindings = load_data()
-  with ApiClient(configuration) as api_client:
-    line_bot_api = MessagingApi(api_client)
-    send_bills_logic(line_bot_api, verified_bindings)
+# @scheduler.scheduled_job('cron', day=1, hour=9, minute=0)
+# def scheduled_send_bills():
+#   verified_bindings = load_data()
+#   with ApiClient(configuration) as api_client:
+#     line_bot_api = MessagingApi(api_client)
+#     send_bills_logic(line_bot_api, verified_bindings)
 
-scheduler.start()
+# scheduler.start()
 
 if __name__ == '__main__':
   app.run(host='0.0.0.0', port=5000, debug=True)
