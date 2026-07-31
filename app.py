@@ -71,7 +71,7 @@ def load_data():
     try:
       with open(DATA_FILE_PATH, 'r', encoding='utf-8') as f:
         data = json.load(f)
-        pending = data.get('pending', {})
+        # 只讀取已驗證的綁定資料
         verified = data.get('verified', {})
 
         # 確保舊資料格式為 List
@@ -79,14 +79,14 @@ def load_data():
           if isinstance(verified[uid], str):
             verified[uid] = [verified[uid]]
 
-        return pending, verified
+        return verified
     except Exception:
       pass
-  return {}, {}
+  return {}
 
 
-def save_data(pending, verified):
-  data = {'pending': pending, 'verified': verified}
+def save_data(verified):
+  data = {'verified': verified}
   with open(DATA_FILE_PATH, 'w', encoding='utf-8') as f:
     json.dump(data, f, ensure_ascii=False, indent=4)
 
@@ -128,7 +128,7 @@ def handle_message(event):
   user_id = event.source.user_id
   text = event.message.text.strip()
 
-  pending_bindings, verified_bindings = load_data()
+  verified_bindings = load_data()
 
   with ApiClient(configuration) as api_client:
     line_bot_api = MessagingApi(api_client)
@@ -182,7 +182,7 @@ def handle_message(event):
       # 避免重複綁定，若未綁定則直接加入「已驗證(verified)」名單
       if bound_string not in verified_bindings[user_id]:
         verified_bindings[user_id].append(bound_string)
-        save_data(pending_bindings, verified_bindings)
+        save_data(verified_bindings)
 
       line_bot_api.reply_message(
           ReplyMessageRequest(
@@ -349,7 +349,7 @@ scheduler = BackgroundScheduler()
 
 @scheduler.scheduled_job('cron', day=1, hour=9, minute=0)
 def scheduled_send_bills():
-  _, verified_bindings = load_data()
+  verified_bindings = load_data()
   with ApiClient(configuration) as api_client:
     line_bot_api = MessagingApi(api_client)
     send_bills_logic(line_bot_api, verified_bindings)
