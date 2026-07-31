@@ -12,11 +12,12 @@ from linebot.v3.messaging import (
     ApiClient,
     Configuration,
     MessagingApi,
+    MessagingApiBlob,
     PushMessageRequest,
     ReplyMessageRequest,
     TextMessage,
 )
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from linebot.v3.webhooks import MessageEvent, TextMessageContent, FileMessageContent
 import pandas as pd
 
 # 載入本機的 .env 檔案
@@ -104,6 +105,69 @@ def callback():
     abort(400)
   return 'OK'
 
+@handler.add(MessageEvent, message=FileMessageContent)
+def handle_file_message(event):
+    user_id = event.source.user_id
+    message_id = event.message.id
+    original_file_name = event.message.file_name
+
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+
+        # 1. 安全機制：確認傳送檔案的人是不是老師
+        if user_id not in TEACHER_USER_IDS:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='抱歉，只有老師權限可以上傳檔案。')]
+                )
+            )
+            return
+
+        # 2. 檢查檔案格式是否為 Excel (.xlsx)
+        if not original_file_name.endswith('.xlsx'):
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='格式錯誤！請上傳 .xlsx 結尾的 Excel 檔案。')]
+                )
+            )
+            return
+
+        # 3. 確保 data 資料夾存在
+        if not os.path.exists(DATA_FOLDER):
+            os.makedirs(DATA_FOLDER)
+
+        try:
+            # 4. 透過 Blob API 下載檔案內容
+            line_bot_blob_api = MessagingApiBlob(api_client)
+            file_content = line_bot_blob_api.get_message_content(message_id)
+
+            # ==========================
+            # 5. 動態產生新的檔案名稱
+            # ==========================
+            now = datetime.datetime.now()
+            # 組合出例如 "2026年07月.xlsx" (這樣能完美匹配我們前面的搜尋邏輯)
+            new_file_name = f"{now.year}年{now.month:02d}月.xlsx"
+            
+            # 儲存檔案到 data 資料夾
+            file_path = os.path.join(DATA_FOLDER, new_file_name)
+            with open(file_path, 'wb') as f:
+                f.write(file_content)
+
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f'✅ 成功接收檔案！\n已自動重新命名並儲存為：【{new_file_name}】\n現在可以輸入「發送帳單」來進行作業了。')]
+                )
+            )
+        except Exception as e:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f'❌ 檔案下載失敗：{str(e)}')]
+                )
+            )
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
@@ -212,6 +276,7 @@ def handle_message(event):
 
 def send_bills_logic(line_bot_api, verified_bindings):
   excel_file_path = get_current_month_excel_path()
+  print(excel_file_path)
 
   if not os.path.exists(excel_file_path):
     return (
@@ -353,11 +418,18 @@ def send_bills_logic(line_bot_api, verified_bindings):
         
         if bound_id in student_unpaid_map:
           student_data = student_unpaid_map[bound_id]
+          
+          # 【修改重點】檢查這個學生的學號是否已經被處理過（例如父母都綁定同一個學生）
+          already_counted = bound_id in matched_excel_students
+
           for record in student_data['records']:
               record['name'] = student_data['name']
               parent_student_details.append(record)
               parent_total_amount += record['subtotal']
-              grand_total_amount += record['subtotal']
+              
+              # 只有在第一次遇到這個學生時，才把小計加入老師的「總發送金額」統計中
+              if not already_counted:
+                  grand_total_amount += record['subtotal']
               
           matched_excel_students.add(bound_id)
 
