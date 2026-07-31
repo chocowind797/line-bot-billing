@@ -221,22 +221,29 @@ def send_bills_logic(line_bot_api, verified_bindings):
 
   try:
     xls = pd.ExcelFile(excel_file_path)
-    
+      
     # 取得當前時間
     now = datetime.datetime.now()
-    # 取得西元年後兩碼 (例如 2026 -> "26")
-    short_year = str(now.year)[-2:]
-    # 取得當前月份 (例如 7)
-    current_month = now.month
     
-    # 組合工作表名稱，例如 "26年7月"
-    current_month_str = f'{short_year}年{current_month}月'
+    # 計算「上一個月」的年份與月份
+    if now.month == 1:
+        target_year = now.year - 1
+        target_month = 12
+    else:
+        target_year = now.year
+        target_month = now.month - 1
+        
+    # 取得目標年份的西元後兩碼 (例如 2026 -> "26", 2025 -> "25")
+    short_year = str(target_year)[-2:]
+    
+    # 組合工作表名稱，例如 "26年6月" 或 "25年12月"
+    target_sheet_name = f'{short_year}年{target_month}月'
 
     # 檢查該名稱的工作表是否存在
-    if current_month_str in xls.sheet_names:
-        target_sheet = current_month_str
+    if target_sheet_name in xls.sheet_names:
+        target_sheet = target_sheet_name
     else:
-    # 如果找不到當月名稱，預設抓取第一個工作表
+        # 如果找不到目標名稱，預設抓取第一個工作表
         target_sheet = xls.sheet_names[0]
 
     df = pd.read_excel(xls, sheet_name=target_sheet, header=None)
