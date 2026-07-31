@@ -143,22 +143,28 @@ def handle_file_message(event):
             line_bot_blob_api = MessagingApiBlob(api_client)
             file_content = line_bot_blob_api.get_message_content(message_id)
 
-            # ==========================
             # 5. 動態產生新的檔案名稱
-            # ==========================
             now = datetime.datetime.now()
-            # 組合出例如 "2026年07月.xlsx" (這樣能完美匹配我們前面的搜尋邏輯)
             new_file_name = f"{now.year}年{now.month:02d}月.xlsx"
-            
-            # 儲存檔案到 data 資料夾
             file_path = os.path.join(DATA_FOLDER, new_file_name)
+
+            # 新增：檢查檔案是否已經存在，用來決定回覆的文字
+            is_overwrite = os.path.exists(file_path)
+
+            # 6. 寫入檔案 (若同名會自動覆蓋)
             with open(file_path, 'wb') as f:
                 f.write(file_content)
+
+            # 根據是否覆蓋，給予不同的提示訊息
+            if is_overwrite:
+                reply_msg = f'✅ 成功接收檔案！\n已「覆蓋」舊檔並更新為：【{new_file_name}】\n現在可以輸入「發送帳單」來進行作業了。'
+            else:
+                reply_msg = f'✅ 成功接收檔案！\n已自動重新命名並儲存為：【{new_file_name}】\n現在可以輸入「發送帳單」來進行作業了。'
 
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text=f'✅ 成功接收檔案！\n已自動重新命名並儲存為：【{new_file_name}】\n現在可以輸入「發送帳單」來進行作業了。')]
+                    messages=[TextMessage(text=reply_msg)]
                 )
             )
         except Exception as e:
