@@ -33,8 +33,6 @@ LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', '')
 LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', '')
 teacher_ids_raw = os.getenv('TEACHER_USER_IDS', '')
 TEACHER_USER_IDS = [uid.strip() for uid in teacher_ids_raw.split(',') if uid.strip()]
-TEACHER_RICH_MENU_ID = os.getenv('TEACHER_RICH_MENU_ID', '')
-PARENT_RICH_MENU_ID = os.getenv('PARENT_RICH_MENU_ID', '')
 
 # v3 的 API 與 Handler 初始化方式
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
@@ -91,22 +89,6 @@ def save_data(verified):
     json.dump(data, f, ensure_ascii=False, indent=4)
 
 
-def set_user_rich_menu(line_bot_api, user_id):
-  try:
-    if user_id in TEACHER_USER_IDS:
-      if TEACHER_RICH_MENU_ID:
-        line_bot_api.link_rich_menu_id_to_user(
-            user_id=user_id, rich_menu_id=TEACHER_RICH_MENU_ID
-        )
-    else:
-      if PARENT_RICH_MENU_ID:
-        line_bot_api.link_rich_menu_id_to_user(
-            user_id=user_id, rich_menu_id=PARENT_RICH_MENU_ID
-        )
-  except Exception as e:
-    print(f'設定 Rich Menu 發生錯誤: {e}')
-
-
 @app.route("/", methods=["GET"])
 def health_check():
   return "Line Bot is alive!", 200
@@ -132,9 +114,6 @@ def handle_message(event):
 
   with ApiClient(configuration) as api_client:
     line_bot_api = MessagingApi(api_client)
-
-    # 確保用戶套用正確的圖文選單
-    set_user_rich_menu(line_bot_api, user_id)
 
     # ==========================
     # 1. 老師專屬指令處理
@@ -202,21 +181,6 @@ def handle_message(event):
       )
       return
 
-    # 預設回覆
-    line_bot_api.reply_message(
-        ReplyMessageRequest(
-            reply_token=event.reply_token,
-            messages=[
-                TextMessage(
-                    text=(
-                        '歡迎使用補習班繳費通知系統。\n'
-                        '請傳送「我是 [編號]--[姓名]」來直接綁定帳號。'
-                    )
-                )
-            ],
-        )
-    )
-
 
 def send_bills_logic(line_bot_api, verified_bindings):
   excel_file_path = get_current_month_excel_path()
@@ -229,34 +193,70 @@ def send_bills_logic(line_bot_api, verified_bindings):
 
   try:
     xls = pd.ExcelFile(excel_file_path)
-    current_month_str = f'{datetime.datetime.now().month}月'
+    
+    # 取得當前時間
+    now = datetime.datetime.now()
+    # 取得西元年後兩碼 (例如 2026 -> "26")
+    short_year = str(now.year)[-2:]
+    # 取得當前月份 (例如 7)
+    current_month = now.month
+    
+    # 組合工作表名稱，例如 "26年7月"
+    current_month_str = f'{short_year}年{current_month}月'
 
+    # 檢查該名稱的工作表是否存在
     if current_month_str in xls.sheet_names:
-      target_sheet = current_month_str
+        target_sheet = current_month_str
     else:
-      target_sheet = xls.sheet_names[0]
+    # 如果找不到當月名稱，預設抓取第一個工作表
+        target_sheet = xls.sheet_names[0]
 
     df = pd.read_excel(xls, sheet_name=target_sheet, header=None)
 
-    excel_students = []
+    # 1. 尋找「學號」所在的欄位索引 (預設為 1 即 B 欄，名稱預設為 A 欄)
+    id_col_idx = 1
+    name_col_idx = 0
     for r_idx, row in df.iterrows():
       for c_idx, val in enumerate(row):
-        if pd.notna(val) and '--' in str(val):
-          student_name = str(val).strip()
-          excel_students.append(
-              {'name': student_name, 'row_idx': r_idx, 'col_idx': c_idx}
-          )
+        if str(val).strip() == '學號':
+          id_col_idx = c_idx
+          name_col_idx = max(0, c_idx - 1)
+          break
+
+    # 2. 收集所有學生資料 (以學號為判斷基準)
+    excel_students = []
+    for r_idx in range(df.shape[0]):
+      raw_id = df.iloc[r_idx, id_col_idx]
+      raw_name = df.iloc[r_idx, name_col_idx]
+      
+      if pd.notna(raw_id):
+        s_id = str(raw_id).strip()
+        # 處理 Pandas 讀取數字時可能產生的 .0 (例如 2601.0 -> 2601)
+        if s_id.endswith('.0'):
+            s_id = s_id[:-2]
+            
+        # 確認該儲存格是有效的學號，而非標題或空值
+        if s_id and s_id != '學號' and s_id != 'None':
+            s_name = str(raw_name).strip() if pd.notna(raw_name) else "未知姓名"
+            excel_students.append({
+                'id': s_id,
+                'name': s_name,
+                'row_idx': r_idx,
+                'col_idx': name_col_idx
+            })
 
     total_count = len(excel_students)
     sent_student_count = 0
     grand_total_amount = 0
 
     if total_count == 0:
-      return f'在【{target_sheet}】中找不到任何學生資料。'
+      return f'在【{target_sheet}】中找不到任何含有學號的學生資料。'
 
+    # 3. 讀取學生薪資與小計
     student_data_map = {}
     for student_info in excel_students:
-      student_full_name = student_info['name']
+      s_id = student_info['id']
+      s_name = student_info['name']
       r_idx = student_info['row_idx']
       c_idx = student_info['col_idx']
 
@@ -264,8 +264,9 @@ def send_bills_logic(line_bot_api, verified_bindings):
       salary = '略'
       subtotal = 0
       book_fee = None
-      remark = None  # 新增：備註變數
+      remark = None
 
+      # 往上找 3 列以內來對應標題列
       for check_r in range(max(0, r_idx - 3), r_idx):
         for check_c in range(c_idx, df.shape[1]):
           header_val = str(df.iloc[check_r, check_c]).strip()
@@ -275,7 +276,7 @@ def send_bills_logic(line_bot_api, verified_bindings):
             salary = df.iloc[r_idx, check_c]
           elif '書籍/教材' in header_val:
             book_fee = df.iloc[r_idx, check_c]
-          elif '備註' in header_val:  # 新增：抓取備註欄位
+          elif '備註' in header_val:
             remark = df.iloc[r_idx, check_c]
           elif '單一學生小計' in header_val:
             raw_sub = df.iloc[r_idx, check_c]
@@ -284,34 +285,38 @@ def send_bills_logic(line_bot_api, verified_bindings):
             except Exception:
               subtotal = 0
 
-      student_data_map[student_full_name] = {
+      # 將資料存入字典，使用「學號(s_id)」當作 Key
+      student_data_map[s_id] = {
+          'id': s_id,
+          'name': s_name,
           'hours': hours if pd.notna(hours) else '略',
           'salary': salary if pd.notna(salary) else '略',
           'subtotal': subtotal,
           'book_fee': book_fee,
-          'remark': remark,  # 新增：將數值存入字典
+          'remark': remark,
       }
 
     matched_excel_students = set()
 
-    for user_id, bound_student_names in verified_bindings.items():
+    # 4. 比對並發送帳單 (比對學號)
+    for user_id, bound_student_records in verified_bindings.items():
       parent_student_details = []
       parent_total_amount = 0
 
-      for bound_name in bound_student_names:
-        for student_full_name, data in student_data_map.items():
-          if bound_name in student_full_name:
-            parent_student_details.append({
-                'name': student_full_name,
-                'hours': data['hours'],
-                'salary': data['salary'],
-                'subtotal': data['subtotal'],
-                'book_fee': data['book_fee'],
-                'remark': data['remark'],  # 新增：傳遞給家長明細
-            })
-            parent_total_amount += data['subtotal']
-            matched_excel_students.add(student_full_name)
-            grand_total_amount += data['subtotal']
+      for bound_record in bound_student_records:
+        # bound_record 格式為 "編號--姓名" (例如 "2601--威澄")，我們將編號切分出來
+        if '--' in bound_record:
+            bound_id = bound_record.split('--')[0].strip()
+        else:
+            bound_id = bound_record.strip()
+        
+        # 使用編號尋找該學生資料
+        if bound_id in student_data_map:
+          data = student_data_map[bound_id]
+          parent_student_details.append(data)
+          parent_total_amount += data['subtotal']
+          matched_excel_students.add(bound_id)  # 記錄已發送的學號
+          grand_total_amount += data['subtotal']
 
       if parent_student_details:
         message_content = (
@@ -321,7 +326,7 @@ def send_bills_logic(line_bot_api, verified_bindings):
         for s_info in parent_student_details:
           message_content += (
               f'\n--------------------\n'
-              f'• 學生資訊：{s_info["name"]}\n'
+              f'• 學生資訊：{s_info["name"]} (編號:{s_info["id"]})\n'
               f'• 上課時數：{s_info["hours"]}\n'
               f'• 薪資/單價：{s_info["salary"]}'
           )
@@ -330,7 +335,6 @@ def send_bills_logic(line_bot_api, verified_bindings):
           if pd.notna(b_fee) and str(b_fee).strip() not in ['', '0', '0.0', 'None']:
               message_content += f'\n• 書籍/教材：{b_fee}'
 
-          # 新增：判斷如果備註存在，且不是空字串或 NaN，才加入帳單顯示
           rmk = s_info.get("remark")
           if pd.notna(rmk) and str(rmk).strip() not in ['', 'None']:
               message_content += f'\n• 備註：{rmk}'
@@ -350,7 +354,6 @@ def send_bills_logic(line_bot_api, verified_bindings):
                 to=user_id, messages=[TextMessage(text=message_content)]
             )
         )
-        sent_student_count += len(parent_student_details)
 
     unsent_count = total_count - len(matched_excel_students)
 
