@@ -263,6 +263,8 @@ def send_bills_logic(line_bot_api, verified_bindings):
       hours = '略'
       salary = '略'
       subtotal = 0
+      book_fee = None
+      remark = None  # 新增：備註變數
 
       for check_r in range(max(0, r_idx - 3), r_idx):
         for check_c in range(c_idx, df.shape[1]):
@@ -271,6 +273,10 @@ def send_bills_logic(line_bot_api, verified_bindings):
             hours = df.iloc[r_idx, check_c]
           elif '薪資' in header_val:
             salary = df.iloc[r_idx, check_c]
+          elif '書籍/教材' in header_val:
+            book_fee = df.iloc[r_idx, check_c]
+          elif '備註' in header_val:  # 新增：抓取備註欄位
+            remark = df.iloc[r_idx, check_c]
           elif '單一學生小計' in header_val:
             raw_sub = df.iloc[r_idx, check_c]
             try:
@@ -282,6 +288,8 @@ def send_bills_logic(line_bot_api, verified_bindings):
           'hours': hours if pd.notna(hours) else '略',
           'salary': salary if pd.notna(salary) else '略',
           'subtotal': subtotal,
+          'book_fee': book_fee,
+          'remark': remark,  # 新增：將數值存入字典
       }
 
     matched_excel_students = set()
@@ -298,6 +306,8 @@ def send_bills_logic(line_bot_api, verified_bindings):
                 'hours': data['hours'],
                 'salary': data['salary'],
                 'subtotal': data['subtotal'],
+                'book_fee': data['book_fee'],
+                'remark': data['remark'],  # 新增：傳遞給家長明細
             })
             parent_total_amount += data['subtotal']
             matched_excel_students.add(student_full_name)
@@ -313,9 +323,19 @@ def send_bills_logic(line_bot_api, verified_bindings):
               f'\n--------------------\n'
               f'• 學生資訊：{s_info["name"]}\n'
               f'• 上課時數：{s_info["hours"]}\n'
-              f'• 薪資/單價：{s_info["salary"]}\n'
-              f'• 單一學生小計：{s_info["subtotal"]:g} 元'
+              f'• 薪資/單價：{s_info["salary"]}'
           )
+
+          b_fee = s_info.get("book_fee")
+          if pd.notna(b_fee) and str(b_fee).strip() not in ['', '0', '0.0', 'None']:
+              message_content += f'\n• 書籍/教材：{b_fee}'
+
+          # 新增：判斷如果備註存在，且不是空字串或 NaN，才加入帳單顯示
+          rmk = s_info.get("remark")
+          if pd.notna(rmk) and str(rmk).strip() not in ['', 'None']:
+              message_content += f'\n• 備註：{rmk}'
+
+          message_content += f'\n• 單一學生小計：{s_info["subtotal"]:g} 元'
 
         if len(parent_student_details) > 1:
           message_content += (
@@ -343,7 +363,6 @@ def send_bills_logic(line_bot_api, verified_bindings):
     )
   except Exception as e:
     return f'發送帳單時發生錯誤: {str(e)}'
-
 
 scheduler = BackgroundScheduler()
 
