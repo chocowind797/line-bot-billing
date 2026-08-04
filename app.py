@@ -337,27 +337,21 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
   try:
     xls = pd.ExcelFile(excel_file_path)
     now = datetime.datetime.now()
+    
+    if now.month == 1:
+        target_year = now.year - 1
+        target_month = 12
+    else:
+        target_year = now.year
+        target_month = now.month - 1
+    # target_year = now.year
+    # target_month = now.month - 1
 
-    target_year = now.year
-    target_month = now.month
-    
-    # 計算「上一個月」的年份與月份 (當作基準月)
-    # if now.month == 1:
-    #     target_year = now.year - 1
-    #     target_month = 12
-    # else:
-    #     target_year = now.year
-    #     target_month = now.month - 1
-        
-    # 準備用來存放所有需繳費紀錄的字典：{ s_id: { 'name': 姓名, 'records': [各月明細] } }
     student_unpaid_map = {}
-    
-    # 統計用變數
-    target_sheet = f"{str(target_year)[-2:]}年{target_month}月" # 基準月名稱
+    target_sheet = f"{str(target_year)[-2:]}年{target_month}月"
     processed_sheets = []
 
-    # 往前推算 6 個月 (包含基準月，由舊到新排序)
-    for i in range(5, -1, -1):
+    for i in range(0, -1, -1):
         calc_month = target_month - i
         calc_year = target_year
         while calc_month <= 0:
@@ -367,7 +361,6 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
         short_year = str(calc_year)[-2:]
         sheet_name = f'{short_year}年{calc_month}月'
         
-        # 確認該月份工作表是否存在
         actual_sheet = None
         if sheet_name in xls.sheet_names:
             actual_sheet = sheet_name
@@ -381,78 +374,88 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
         processed_sheets.append(actual_sheet)
         df = pd.read_excel(xls, sheet_name=actual_sheet, header=None)
 
-        # 1. 尋找「學號」及「已繳」所在的欄位索引
-        id_col_idx = 1
-        name_col_idx = 0
-        paid_col_idx = -1
-        
-        for r_idx, row in df.iterrows():
-          for c_idx, val in enumerate(row):
-            val_str = str(val).strip()
-            if val_str == '學號':
-              id_col_idx = c_idx
-              name_col_idx = max(0, c_idx - 1)
-            elif val_str == '已繳':
-              paid_col_idx = c_idx
+        if df.empty:
+            continue
 
-        # 2. 收集此工作表中的學生資料與繳費狀態
-        for r_idx in range(df.shape[0]):
-          raw_id = df.iloc[r_idx, id_col_idx]
-          if pd.notna(raw_id):
+        # ==========================================
+        # 1. 極速優化：掃描第一列 (Row 0)，建立所有欄位索引
+        # ==========================================
+        header_row = df.iloc[0]
+        col_idx_map = {}
+        
+        for c_idx, val in enumerate(header_row):
+            val_str = str(val).strip()
+            if '名字' in val_str or '姓名' in val_str: col_idx_map['name'] = c_idx
+            elif '學號' in val_str: col_idx_map['id'] = c_idx
+            elif '已繳' in val_str: col_idx_map['paid'] = c_idx
+            elif '備註' in val_str: col_idx_map['remark'] = c_idx
+            elif '時數小計' in val_str: col_idx_map['hours'] = c_idx
+            elif '薪資' in val_str: col_idx_map['salary'] = c_idx
+            elif '書籍/教材' in val_str: col_idx_map['book_fee'] = c_idx
+            elif '單一學生小計' in val_str: col_idx_map['subtotal'] = c_idx
+
+        # 如果連學號欄位都找不到，就跳過這張表
+        if 'id' not in col_idx_map:
+            continue
+            
+        # 防呆：如果標題剛好沒有寫名字，就預設拿學號的前一欄
+        if 'name' not in col_idx_map:
+            col_idx_map['name'] = max(0, col_idx_map['id'] - 1)
+
+        # ==========================================
+        # 2. 拋棄巢狀迴圈：直接根據索引讀取資料，時間複雜度大幅降低
+        # ==========================================
+        for r_idx in range(1, df.shape[0]):
+            raw_id = df.iloc[r_idx, col_idx_map['id']]
+            if pd.isna(raw_id):
+                continue
+                
             s_id = str(raw_id).strip()
             if s_id.endswith('.0'):
                 s_id = s_id[:-2]
                 
-            if s_id and s_id != '學號' and s_id != 'None':
-                # ==========================================
-                # 【新增】：如果有指定學號，且目前學號不符，就跳過
-                # ==========================================
-                if target_student_id and s_id != target_student_id:
-                    continue
-                raw_name = df.iloc[r_idx, name_col_idx]
-                s_name = str(raw_name).strip() if pd.notna(raw_name) else "未知姓名"
-                
-                # 判斷是否已繳
-                # 【修改重點】如果沒有「已繳」欄位 (paid_col_idx == -1)，預設為 True (已繳)
-                is_paid = True if paid_col_idx == -1 else False
-                
-                if paid_col_idx != -1:
-                    paid_val = df.iloc[r_idx, paid_col_idx]
-                    if pd.notna(paid_val):
-                        p_str = str(paid_val).strip()
-                        if p_str in ['1', '1.0', '已繳', 'V', 'v']:
-                            is_paid = True
-                
-                # 若已繳納，則跳過不記錄
-                if is_paid:
-                    continue
-                    
-                # 3. 讀取未繳費的薪資與小計
-                hours, salary, subtotal, book_fee, remark = '略', '略', 0, None, None
-                for check_r in range(max(0, r_idx - 3), r_idx):
-                    for check_c in range(name_col_idx, df.shape[1]):
-                        header_val = str(df.iloc[check_r, check_c]).strip()
-                        if '時數小計' in header_val: hours = df.iloc[r_idx, check_c]
-                        elif '薪資' in header_val: salary = df.iloc[r_idx, check_c]
-                        elif '書籍/教材' in header_val: book_fee = df.iloc[r_idx, check_c]
-                        elif '備註' in header_val: remark = df.iloc[r_idx, check_c]
-                        elif '單一學生小計' in header_val:
-                            raw_sub = df.iloc[r_idx, check_c]
-                            try: subtotal = float(raw_sub) if pd.notna(raw_sub) else 0
-                            except: subtotal = 0
+            if not s_id or s_id == '學號' or s_id == 'None':
+                continue
 
-                if subtotal > 0:
-                    if s_id not in student_unpaid_map:
-                        student_unpaid_map[s_id] = {'name': s_name, 'records': []}
-                        
-                    student_unpaid_map[s_id]['records'].append({
-                        'month_str': f"{calc_month}月份",
-                        'hours': hours if pd.notna(hours) else '略',
-                        'salary': salary if pd.notna(salary) else '略',
-                        'subtotal': subtotal,
-                        'book_fee': book_fee,
-                        'remark': remark
-                    })
+            raw_name = df.iloc[r_idx, col_idx_map['name']]
+            s_name = str(raw_name).strip() if pd.notna(raw_name) else "未知姓名"
+
+            # 判斷是否已繳
+            is_paid = False
+            if 'paid' in col_idx_map:
+                paid_val = df.iloc[r_idx, col_idx_map['paid']]
+                if pd.notna(paid_val):
+                    p_str = str(paid_val).strip()
+                    if p_str in ['1', '1.0', '已繳', 'V', 'v']:
+                        is_paid = True
+            
+            if is_paid:
+                continue
+
+            # 讀取小計並確認是否有欠費
+            subtotal = 0
+            if 'subtotal' in col_idx_map:
+                raw_sub = df.iloc[r_idx, col_idx_map['subtotal']]
+                try: subtotal = float(raw_sub) if pd.notna(raw_sub) else 0
+                except: subtotal = 0
+                
+            if subtotal > 0:
+                hours = df.iloc[r_idx, col_idx_map['hours']] if 'hours' in col_idx_map else '略'
+                salary = df.iloc[r_idx, col_idx_map['salary']] if 'salary' in col_idx_map else '略'
+                book_fee = df.iloc[r_idx, col_idx_map['book_fee']] if 'book_fee' in col_idx_map else None
+                remark = df.iloc[r_idx, col_idx_map['remark']] if 'remark' in col_idx_map else None
+
+                if s_id not in student_unpaid_map:
+                    student_unpaid_map[s_id] = {'name': s_name, 'records': []}
+                    
+                student_unpaid_map[s_id]['records'].append({
+                    'month_str': f"{calc_month}月份",
+                    'hours': hours if pd.notna(hours) else '略',
+                    'salary': salary if pd.notna(salary) else '略',
+                    'subtotal': subtotal,
+                    'book_fee': book_fee,
+                    'remark': remark
+                })
 
     if not student_unpaid_map:
       return f'掃描了 {len(processed_sheets)} 個月份的工作表，目前所有學生皆已完成繳費或無欠款。'
@@ -460,7 +463,9 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
     matched_excel_students = set()
     grand_total_amount = 0
 
-    # 4. 比對並發送帳單
+    # ==========================================
+    # 3. 比對並發送帳單 (含過濾與單發功能)
+    # ==========================================
     for user_id, bound_student_records in verified_bindings.items():
       parent_student_details = []
       parent_total_amount = 0
@@ -470,17 +475,13 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
             bound_id = bound_record.split('--')[0].strip()
         else:
             bound_id = bound_record.strip()
-
-        # ==========================================
-        # 【新增】：如果有指定學號，且目前學號不符，就跳過
-        # ==========================================
+            
+        # 如果是「單發帳單」，跳過不符的學號
         if target_student_id and bound_id != target_student_id:
             continue
         
         if bound_id in student_unpaid_map:
           student_data = student_unpaid_map[bound_id]
-          
-          # 【修改重點】檢查這個學生的學號是否已經被處理過（例如父母都綁定同一個學生）
           already_counted = bound_id in matched_excel_students
 
           for record in student_data['records']:
@@ -488,7 +489,6 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
               parent_student_details.append(record)
               parent_total_amount += record['subtotal']
               
-              # 只有在第一次遇到這個學生時，才把小計加入老師的「總發送金額」統計中
               if not already_counted:
                   grand_total_amount += record['subtotal']
               
@@ -536,9 +536,13 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
             )
         )
 
-        # 新增：每次推播後暫停 0.1 秒，降低伺服器瞬間併發壓力
-        time.sleep(0.1)
+    # 如果是單獨發送，回傳單獨發送的結果
+    if target_student_id:
+        if target_student_id not in matched_excel_students:
+            return f'⚠️ 無法發送：找不到編號【{target_student_id}】的欠費資料，或是該學生尚未綁定家長。'
+        return f'✅ 已成功單獨發送編號【{target_student_id}】的帳單給家長！'
 
+    # 全部發送的統計結果
     total_unpaid_students = len(student_unpaid_map)
     unsent_count = total_unpaid_students - len(matched_excel_students)
 
