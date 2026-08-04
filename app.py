@@ -188,9 +188,6 @@ def handle_message(event):
     # ==========================
     # 1. 老師專屬指令處理
     # ==========================
-    # ==========================
-    # 1. 老師專屬指令處理
-    # ==========================
     if user_id in TEACHER_USER_IDS:
       if text.startswith('發送帳單'):
         # 拆解指令與數字
@@ -266,84 +263,111 @@ def handle_message(event):
         return
 
     # ==========================
-    # 2. 家長綁定處理 (無須審核)
+    # 2. 家長綁定處理 (解析科目編號、稱謂清理並精準推播)
     # ==========================
-    if text.startswith('我是'):
-      content = text.replace('我是', '').strip()
-      
-      # 驗證格式是否包含 '--'
-      if '--' not in content:
+    # 檢查開頭是否為「我是」，且包含 '-' 和 '--'
+    if text.startswith('我是') and '-' in text and '--' in text:
+      try:
+        # 1. 移除開頭的「我是」
+        content = text.replace('我是', '').strip()
+
+        # 2. 切割字串解析資訊
+        # 先用第一個 '-' 切開，左邊是科目代碼，右邊是 學號--姓名
+        subject_part, rest_part = content.split('-', 1)
+        student_id, raw_student_name = rest_part.split('--', 1)
+
+        subject_code = subject_part.strip()
+        student_id = student_id.strip()
+        student_name = raw_student_name.strip()
+
+        # 3. 自動過濾掉結尾的稱謂 (讓名字保持乾淨，例如「小明的爸爸」變「小明」)
+        for suffix in ['的爸爸', '的媽媽', '爸爸', '媽媽', '的家長', '家長', '阿公', '阿嬤']:
+            if student_name.endswith(suffix):
+                # 如果結尾符合，就把它切掉
+                student_name = student_name[:-len(suffix)].strip()
+                break
+
+        # 組合完整的綁定字串存入 JSON (例如: 1-2601--小明)
+        bound_string = f"{subject_code}-{student_id}--{student_name}"
+
+        # 4. 檢查這個科目編號是否存在於我們的 config 系統中
+        if subject_code not in SUBJECT_INFO:
           line_bot_api.reply_message(
               ReplyMessageRequest(
                   reply_token=event.reply_token,
-                  messages=[
-                      TextMessage(
-                          text='格式錯誤！請依照以下格式輸入：\n我是 編號--姓名\n例如：我是 A01--王小明'
-                      )
-                  ]
+                  messages=[TextMessage(text=f'❌ 找不到科目代碼【{subject_code}】。請確認您輸入的格式為「我是科目代碼-學號--姓名」。\n例如：我是1-2601--王小明')]
               )
           )
           return
 
-      # 拆解編號與姓名並組合為識別碼
-      parts = content.split('--', 1)
-      student_id = parts[0].strip()
-      student_name = parts[1].strip()
-      bound_string = f"{student_id}--{student_name}"
+        # 5. 抓取該科目的名稱與負責老師
+        subject_data = SUBJECT_INFO[subject_code]
+        subject_name = subject_data['name']
+        target_teachers = subject_data['teachers']
 
-      if user_id not in verified_bindings:
-        verified_bindings[user_id] = []
+        # 6. 將綁定資料寫入 bindings.json
+        if user_id not in verified_bindings:
+          verified_bindings[user_id] = []
 
-      # 避免重複綁定，若未綁定則直接加入「已驗證(verified)」名單
-      if bound_string not in verified_bindings[user_id]:
-        verified_bindings[user_id].append(bound_string)
-        save_data(verified_bindings)
+        if bound_string not in verified_bindings[user_id]:
+          verified_bindings[user_id].append(bound_string)
+          save_data(verified_bindings)
 
-      line_bot_api.reply_message(
-          ReplyMessageRequest(
-              reply_token=event.reply_token,
-              messages=[
-                  TextMessage(
-                      text=(
-                          f'綁定成功！🎉\n'
-                          f'已將您的帳號綁定至：\n'
-                          f'編號：【{student_id}】\n'
-                          f'姓名：【{student_name}】\n'
-                          f'未來將可接收該學生的繳費通知。'
-                      )
-                  )
-              ],
-          )
-      )
+        # 7. 回覆家長成功訊息
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text=(
+                            f'綁定成功！🎉\n'
+                            f'已將您的帳號綁定至【{subject_name}】課程：\n'
+                            f'學號：【{student_id}】\n'
+                            f'姓名：【{student_name}】\n'
+                            f'未來將可接收該學生的繳費通知。'
+                        )
+                    )
+                ],
+            )
+        )
 
-      # 取得家長的 LINE 顯示名稱
-      try:
-        profile = line_bot_api.get_profile(user_id)
-        parent_name = profile.display_name
-      except Exception:
-        parent_name = '家長'
-
-      # 推播通知給所有老師
-      for teacher_id in TEACHER_USER_IDS:
+        # 8. 【精準推播】只把通知傳給該科目的老師！
         try:
-          line_bot_api.push_message(
-              push_message_request=PushMessageRequest(
-                  to=teacher_id,
-                  messages=[
-                      TextMessage(
-                          text=(
-                              f'【新增綁定通知】🔔\n'
-                              f'家長「{parent_name}」已成功綁定學生：\n'
-                              f'編號：【{student_id}】\n'
-                              f'姓名：【{student_name}】'
-                          )
-                      )
-                  ]
-              )
-          )
-        except Exception as e:
-          print(f"通知老師 {teacher_id} 失敗: {e}")
-      return
+          profile = line_bot_api.get_profile(user_id)
+          parent_name = profile.display_name
+        except Exception:
+          parent_name = '家長'
+
+        for teacher_id in target_teachers:
+          try:
+            line_bot_api.push_message(
+                push_message_request=PushMessageRequest(
+                    to=teacher_id,
+                    messages=[
+                        TextMessage(
+                            text=(
+                                f'【新增綁定通知】🔔\n'
+                                f'家長「{parent_name}」已成功綁定【{subject_name}】學生：\n'
+                                f'學號：【{student_id}】\n'
+                                f'姓名：【{student_name}】'
+                            )
+                        )
+                    ]
+                )
+            )
+          except Exception as e:
+            print(f"通知老師 {teacher_id} 失敗: {e}")
+            
+        return # 處理完畢，結束這一回合
+        
+      except ValueError:
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text='⚠️ 格式錯誤！請確認輸入格式為：我是科目編號-學號--姓名\n例如：我是1-2601--王小明')]
+            )
+        )
+        return
 
 
 def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None, lookback_months=6):
