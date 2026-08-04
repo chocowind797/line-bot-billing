@@ -23,7 +23,9 @@ from linebot.v3.messaging import (
     ButtonsTemplate,   
     PostbackAction,
     QuickReply,
-    QuickReplyItem 
+    QuickReplyItem,
+    ConfirmTemplate,
+    MessageAction,
 )
 from linebot.v3.webhooks import (
     MessageEvent, 
@@ -33,22 +35,7 @@ from linebot.v3.webhooks import (
 )
 import pandas as pd
 # 從 config.py 統一匯入所有環境變數與設定
-from config import (
-    LINE_CHANNEL_ACCESS_TOKEN,
-    LINE_CHANNEL_SECRET,
-    ADMIN_USER_IDS,
-    SUBJECT_INFO,
-    ALL_TEACHER_IDS,
-    DATA_FOLDER,
-    DATA_FILE_PATH,
-    SUBJECTS_FILE,
-    reload_config,
-    update_subject_payment_info,
-    generate_invite_key,
-    redeem_invite_key,
-    generate_subject_creation_key,
-    create_new_subject_by_key
-)
+from config import *
 
 app = Flask(__name__)
 
@@ -525,6 +512,96 @@ def handle_postback(event):
                     )
                 )
             return
+        # ==========================================
+        # 處理路線 F-1：管理員點擊刪除後，跳出 Confirm 確認按鈕
+        # ==========================================
+        if action == 'del_sub':
+            if teacher_id not in ADMIN_USER_IDS:
+                line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='⚠️ 只有系統管理員可以刪除學科。')]))
+                return
+
+            sub_code = postback_data.get('sub')
+            if sub_code not in SUBJECT_INFO:
+                line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='⚠️ 找不到該學科。')]))
+                return
+
+            sub_name = SUBJECT_INFO[sub_code]['name']
+
+            # 發送 Confirm 確認樣板
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[
+                        TemplateMessage(
+                            alt_text=f"確認刪除學科：{sub_name}",
+                            template=ConfirmTemplate(
+                                text=f"⚠️ 您確定要刪除學科【{sub_name}】嗎？\n刪除後將無法復原！",
+                                actions=[
+                                    PostbackAction(
+                                        label="確定刪除",
+                                        data=f"action=confirm_del_sub&sub={sub_code}",
+                                        display_text=f"確定刪除 {sub_name}"
+                                    ),
+                                    MessageAction(
+                                        label="取消",
+                                        text="取消刪除"
+                                    )
+                                ]
+                            )
+                        )
+                    ]
+                )
+            )
+            return
+        # ==========================================
+        # 處理路線 F-2：管理員按下「確定刪除」後執行刪除並發送通知
+        # ==========================================
+        if action == 'confirm_del_sub':
+            if teacher_id not in ADMIN_USER_IDS:
+                line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='⚠️ 只有系統管理員可以刪除學科。')]))
+                return
+
+            sub_code = postback_data.get('sub')
+            
+            # 執行刪除
+            success, result_msg, admin_teacher_id = delete_subject_by_admin(sub_code, teacher_id, ADMIN_USER_IDS)
+            
+            if success:
+                sub_name = result_msg
+                
+                # 1. 回覆管理員刪除成功
+                reply_msgs = [TextMessage(text=f'🗑️ 已成功刪除學科：【{sub_name}】（代碼: {sub_code}）')]
+
+                # 2. 如果該學科有指定管理老師，且不是管理員本人，主動發送通知給該管理老師
+                if admin_teacher_id and admin_teacher_id != teacher_id:
+                    try:
+                        line_bot_api.push_message(
+                            PushMessageRequest(
+                                to=admin_teacher_id,
+                                messages=[
+                                    TextMessage(
+                                        text=f'⚠️ 【系統通知】\n您所管理的學科【{sub_name}】已被系統管理員刪除。如有疑問請與管理員聯繫。'
+                                    )
+                                ]
+                            )
+                        )
+                    except Exception as e:
+                        print(f"發送刪除通知給管理老師失敗: {e}")
+
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=reply_msgs
+                    )
+                )
+            else:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=result_msg)]
+                    )
+                )
+            return
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
@@ -725,6 +802,78 @@ def handle_message(event):
                     ]
                 )
             )
+        return
+
+      # --------------------------
+      # 管理員：刪除學科（支援直接輸入或按鈕選擇）
+      # --------------------------
+      elif text == '刪除學科' or text.startswith('刪除學科'):
+        if user_id not in ADMIN_USER_IDS:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='⚠️ 只有系統管理員可以刪除學科。')]
+                )
+            )
+            return
+
+        parts = text.split()
+        # 如果管理員直接輸入代碼（例如：刪除學科 1）
+        if len(parts) > 1:
+            sub_code = parts[1].strip()
+            success, result = delete_subject_by_admin(sub_code, user_id, ADMIN_USER_IDS)
+            if success:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=f'🗑️ 已成功刪除學科：【{result}】（代碼: {sub_code}）')]
+                    )
+                )
+            else:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=result)]
+                    )
+                )
+            return
+
+        # 如果只輸入「刪除學科」，列出所有現有學科讓管理員用按鈕選擇
+        if not SUBJECT_INFO:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='⚠️ 目前系統中沒有任何學科可供刪除。')]
+                )
+            )
+            return
+
+        items = []
+        for sub_code, sub_info in SUBJECT_INFO.items():
+            sub_name = sub_info['name']
+            postback_data = f"action=del_sub&sub={sub_code}"
+            
+            items.append(
+                QuickReplyItem(
+                    action=PostbackAction(
+                        label=f"刪除 {sub_name}", 
+                        data=postback_data, 
+                        display_text=f"刪除學科 {sub_name}"
+                    )
+                )
+            )
+
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text="⚠️ 【警告】請選擇您想要刪除的學科：\n（刪除後將移除該學科的所有設定）",
+                        quick_reply=QuickReply(items=items)
+                    )
+                ]
+            )
+        )
         return
 
     # ==========================

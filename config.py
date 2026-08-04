@@ -12,6 +12,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(BASE_DIR, 'data')
 DATA_FILE_PATH = os.path.join(BASE_DIR, 'bindings.json')
 SUBJECTS_FILE = os.path.join(BASE_DIR, 'subjects.json') # 新增：科目設定檔路徑
+KEYS_FILE = os.path.join(BASE_DIR, 'keys.json') # 新增：金鑰設定檔路徑
 
 # ==========================================
 # 宣告全域變數 (先建立空的容器)
@@ -263,3 +264,36 @@ def create_new_subject_by_key(user_id, subject_key, subject_name):
         return True, sub_code
     except Exception as e:
         return False, f"❌ 寫入新學科失敗: {e}"
+
+# ==========================================
+# 管理員可以刪除學科
+# ==========================================
+def delete_subject_by_admin(sub_code, admin_user_id, admin_user_ids):
+    """系統管理員刪除指定學科，並回傳 (是否成功, 學科名稱, 管理老師ID)"""
+    if admin_user_id not in admin_user_ids:
+        return False, "⚠️ 只有系統管理員可以刪除學科。", None
+
+    if os.path.exists(SUBJECTS_FILE):
+        try:
+            with open(SUBJECTS_FILE, 'r', encoding='utf-8') as f:
+                raw_subjects = json.load(f)
+            
+            if sub_code not in raw_subjects:
+                return False, f"⚠️ 找不到代碼為【{sub_code}】的學科。", None
+
+            sub_data = raw_subjects[sub_code]
+            sub_name = sub_data.get("name", sub_code)
+            admin_teacher_id = sub_data.get("admin_teacher") # 取得該學科的管理老師 ID
+
+            # 從字典中刪除該學科
+            del raw_subjects[sub_code]
+
+            with open(SUBJECTS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(raw_subjects, f, ensure_ascii=False, indent=4)
+
+            # 重新載入設定
+            reload_config()
+            return True, sub_name, admin_teacher_id
+        except Exception as e:
+            return False, f"❌ 刪除學科失敗: {e}", None
+    return False, "⚠️ 找不到 subjects.json 檔案。", None
