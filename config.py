@@ -3,7 +3,7 @@ import json
 from dotenv import load_dotenv
 
 # ==========================================
-# 1. 基礎路徑設定
+# 基礎路徑設定
 # ==========================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FOLDER = os.path.join(BASE_DIR, 'data')
@@ -11,7 +11,7 @@ DATA_FILE_PATH = os.path.join(BASE_DIR, 'bindings.json')
 SUBJECTS_FILE = os.path.join(BASE_DIR, 'subjects.json') # 新增：科目設定檔路徑
 
 # ==========================================
-# 2. 宣告全域變數 (先建立空的容器)
+# 宣告全域變數 (先建立空的容器)
 # ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = ""
 LINE_CHANNEL_SECRET = ""
@@ -20,7 +20,7 @@ SUBJECT_INFO = {}
 ALL_TEACHER_IDS = set()
 
 # ==========================================
-# 3. 建立動態讀取函式
+# 建立動態讀取函式
 # ==========================================
 def reload_config():
     """重新讀取 .env 與 subjects.json 並更新所有設定變數"""
@@ -65,6 +65,31 @@ def reload_config():
     print("✅ 設定檔、.env 與科目資料已重新載入並更新！")
 
 # ==========================================
-# 4. 程式第一次啟動時，自動執行一次讀取
+# 程式第一次啟動時，自動執行一次讀取
 # ==========================================
 reload_config()
+
+# ==========================================
+# 老師可以在聊天室內修改payment_info
+# ==========================================
+def update_subject_payment_info(sub_code, new_payment_info):
+    """更新指定科目的 payment_info 並寫回 subjects.json"""
+    if os.path.exists(SUBJECTS_FILE):
+        try:
+            with open(SUBJECTS_FILE, 'r', encoding='utf-8') as f:
+                raw_subjects = json.load(f)
+            
+            if sub_code in raw_subjects:
+                # 更新該科目的 payment_info
+                raw_subjects[sub_code]["payment_info"] = new_payment_info
+                
+                # 寫回 subjects.json
+                with open(SUBJECTS_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(raw_subjects, f, ensure_ascii=False, indent=4)
+                
+                # 重新載入全域設定，讓變更立刻生效
+                reload_config()
+                return True
+        except Exception as e:
+            print(f"更新 subjects.json 失敗: {e}")
+    return False

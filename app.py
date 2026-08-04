@@ -41,7 +41,8 @@ from config import (
     ALL_TEACHER_IDS,
     DATA_FOLDER,
     DATA_FILE_PATH,
-    reload_config  # 新增這一行
+    reload_config,
+    update_subject_payment_info
 )
 
 app = Flask(__name__)
@@ -665,6 +666,75 @@ def handle_message(event):
                 ]
             )
         )
+        return
+
+      # --------------------------
+      # 修改科目付款說明區塊
+      # --------------------------
+      elif text.startswith('修改說明'):
+        parts = text.split(maxsplit=2)
+        if len(parts) < 3:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='格式錯誤！請輸入：\n修改說明 科目代碼 新的匯款資訊\n例如：修改說明 1 玉山銀行 808 帳號...')]
+                )
+            )
+            return
+
+        sub_code = parts[1].strip()
+        new_info = parts[2].strip()
+
+        # 1. 檢查該科目是否存在
+        if sub_code not in SUBJECT_INFO:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f'⚠️ 找不到代碼為【{sub_code}】的科目。')]
+                )
+            )
+            return
+
+        # 2. 檢查權限：一般老師只能修改自己負責的科目，管理員全都可以修改
+        if user_id not in ADMIN_USER_IDS:
+            teacher_subjects = []
+            for s_code, s_info in SUBJECT_INFO.items():
+                if user_id in s_info['teachers']:
+                    teacher_subjects.append(s_code)
+            
+            if sub_code not in teacher_subjects:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text='⚠️ 您沒有權限修改其他老師負責的科目說明。')]
+                    )
+                )
+                return
+
+        # 3. 執行寫入與更新
+        success = update_subject_payment_info(sub_code, new_info)
+        if success:
+            subject_name = SUBJECT_INFO[sub_code]['name']
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[
+                        TextMessage(
+                            text=(
+                                f'✅ 成功更新【{subject_name}】的繳費說明！\n\n'
+                                f'【目前最新的說明內容】\n{new_info}'
+                            )
+                        )
+                    ]
+                )
+            )
+        else:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='❌ 寫入設定檔失敗，請檢查伺服器記錄。')]
+                )
+            )
         return
 
     # ==========================
