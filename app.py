@@ -2,6 +2,7 @@ import datetime
 import glob
 import json
 import logging
+import threading
 import os
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
@@ -190,14 +191,33 @@ def handle_message(event):
     # ==========================
     if user_id in TEACHER_USER_IDS:
       if text == '發送帳單':
-        # 全部發送
-        result_msg = send_bills_logic(line_bot_api, verified_bindings)
+        # 1. 立即回覆老師，避免 LINE Webhook 超時
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=result_msg)],
+                messages=[TextMessage(text='⏳ 系統已開始在背景處理並發送帳單，完成後會主動通知您，請稍候...')]
             )
         )
+        # 2. 定義背景任務函式
+        def background_send_task(teacher_id, bindings):
+            # 在新的執行緒中，需要重新建立 ApiClient 連線
+            with ApiClient(configuration) as bg_api_client:
+                bg_line_bot_api = MessagingApi(bg_api_client)
+                
+                # 執行發送邏輯
+                result_msg = send_bills_logic(bg_line_bot_api, bindings)
+                
+                # 發送完成後，推播結果給老師
+                bg_line_bot_api.push_message(
+                    push_message_request=PushMessageRequest(
+                        to=teacher_id, 
+                        messages=[TextMessage(text=result_msg)]
+                    )
+                )
+
+        # 3. 開啟新的執行緒去執行背景任務
+        thread = threading.Thread(target=background_send_task, args=(user_id, verified_bindings))
+        thread.start()
         return
       
       elif text.startswith('單發帳單'):
