@@ -57,7 +57,7 @@ log.setLevel(logging.ERROR)
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# 用來記錄正在修改說名的老師狀態 {teacher_id: sub_code}
+# 用來記錄正在修改說明的老師狀態 {teacher_id: sub_code}
 PENDING_PAYMENT_EDIT = {}
 
 def get_current_month_excel_path(folder_path):
@@ -531,6 +531,8 @@ def handle_message(event):
   with ApiClient(configuration) as api_client:
     line_bot_api = MessagingApi(api_client)
 
+    if text.startswith('t'):
+        reload_config()
     # --------------------------
     # 新老師：輸入金鑰加入科目
     # --------------------------
@@ -573,11 +575,22 @@ def handle_message(event):
     # 0. 檢查是否正在進行「修改說明」的第二階段輸入
     # ==========================
     if user_id in PENDING_PAYMENT_EDIT:
+        # 💡 如果老師輸入「取消」或「取消修改」，則終止流程並清除狀態
+        if text in ['取消', '取消修改']:
+            PENDING_PAYMENT_EDIT.pop(user_id, None)
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='❌ 已取消本次的修改說明操作。')]
+                )
+            )
+            return
+        
         sub_code = PENDING_PAYMENT_EDIT.pop(user_id) # 取出後清除狀態，避免卡住
         subject_name = SUBJECT_INFO.get(sub_code, {}).get('name', '該科目')
         
-        # 執行寫入
-        success = update_subject_payment_info(sub_code, text)
+        # 執行寫入（帶入權限檢查）
+        success, err_msg = update_subject_payment_info(sub_code, text, user_id)
         if success:
             line_bot_api.reply_message(
                 ReplyMessageRequest(
@@ -802,33 +815,30 @@ def handle_message(event):
         return
 
       # --------------------------
-      # 修改科目付款說明區塊 (引導式互動)
+      # 修改科目付款說明區塊 (僅限管理老師)
       # --------------------------
-      elif text == '修改說明' or text.startswith('修改說明'):
-        # 1. 自動找出該使用者負責的科目
-        target_subjects = []
-        if user_id in ADMIN_USER_IDS:
-            target_subjects = list(SUBJECT_INFO.keys())
-        else:
-            for sub_code, sub_info in SUBJECT_INFO.items():
-                if user_id in sub_info['teachers']:
-                    target_subjects.append(sub_code)
-
-        if not target_subjects:
+      elif text == '修改說明':
+        # 篩選出該使用者是「管理老師」或「系統管理員」的科目
+        managed_subjects = []
+        for sub_code, sub_info in SUBJECT_INFO.items():
+            # 假設我們在 config 的 SUBJECT_INFO 也有帶入 admin_teacher
+            admin_t = sub_info.get('admin_teacher')
+            if user_id in ADMIN_USER_IDS or admin_t == user_id:
+                managed_subjects.append(sub_code)
+        if not managed_subjects:
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text='⚠️ 您目前沒有被分配到任何科目。')]
+                    messages=[TextMessage(text='⚠️ 您目前沒有被指定為任何學科的管理老師，無法修改繳費說明。')]
                 )
             )
             return
 
-        # 2. 如果只有一個科目，直接進入該科目的修改狀態
-        if len(target_subjects) == 1:
-            sub_code = target_subjects[0]
+        # 如果剛好只管理 1 科，直接進入該科目的修改狀態
+        if len(managed_subjects) == 1:
+            sub_code = managed_subjects[0]
             sub_name = SUBJECT_INFO[sub_code]['name']
             
-            # 記錄狀態：這位老師接下來傳的訊息就是要給這個科目的新內容
             PENDING_PAYMENT_EDIT[user_id] = sub_code
             
             line_bot_api.reply_message(
@@ -843,11 +853,10 @@ def handle_message(event):
             )
             return
 
-        # 3. 如果有多個科目，跳出選擇按鈕 (Quick Reply)
+        # 如果有多個管理的學科，跳出選擇按鈕
         items = []
-        for sub_code in target_subjects:
+        for sub_code in managed_subjects:
             sub_name = SUBJECT_INFO[sub_code]['name']
-            # 將動作設為 select_edit_sub
             postback_data = f"action=select_edit_sub&sub={sub_code}"
             
             items.append(
@@ -860,13 +869,12 @@ def handle_message(event):
                 )
             )
 
-        # 管理員額外提供全部修改的選項（或可依需求調整，此處以單科為主）
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
                 messages=[
                     TextMessage(
-                        text="📋 請選擇您想要修改哪個科目的繳費說明：",
+                        text="📋 請選擇您想要修改哪個學科的繳費說明：",
                         quick_reply=QuickReply(items=items)
                     )
                 ]

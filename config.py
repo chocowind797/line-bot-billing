@@ -53,6 +53,7 @@ def reload_config():
                     # 組合出程式需要的 SUBJECT_INFO 格式，並自動連結對應的資料夾
                     SUBJECT_INFO[sub_code] = {
                         "name": sub_data.get("name", "未知科目"),
+                        "admin_teacher": sub_data.get("admin_teacher", ""),
                         "teachers": sub_data.get("teachers", []),
                         "folder": os.path.join(DATA_FOLDER, sub_data.get("folder", str(sub_code))),
                         "payment_info": sub_data.get("payment_info", "") # 順便帶入自訂付款資訊
@@ -74,7 +75,7 @@ reload_config()
 # ==========================================
 # 老師可以在聊天室內修改payment_info
 # ==========================================
-def update_subject_payment_info(sub_code, new_payment_info):
+def update_subject_payment_info(sub_code, new_payment_info, admin_user_ids):
     """更新指定科目的 payment_info 並寫回 subjects.json"""
     if os.path.exists(SUBJECTS_FILE):
         try:
@@ -82,7 +83,12 @@ def update_subject_payment_info(sub_code, new_payment_info):
                 raw_subjects = json.load(f)
             
             if sub_code in raw_subjects:
-                raw_subjects[sub_code]["payment_info"] = new_payment_info
+                sub_data = raw_subjects[sub_code]
+                # 權限檢查：必須是系統管理員，或是該科目的指定管理老師
+                if user_id not in admin_user_ids and sub_data.get("admin_teacher") != user_id:
+                    return False, "⚠️ 您不是該科目的管理老師，無權修改繳費說明。"
+                
+                sub_data["payment_info"] = new_payment_info
                 with open(SUBJECTS_FILE, 'w', encoding='utf-8') as f:
                     json.dump(raw_subjects, f, ensure_ascii=False, indent=4)
                 reload_config()
