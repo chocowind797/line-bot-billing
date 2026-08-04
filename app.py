@@ -53,25 +53,44 @@ configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 
-def get_current_month_excel_path():
-  if not os.path.exists(DATA_FOLDER):
-    os.makedirs(DATA_FOLDER)
+def get_current_month_excel_path(folder_path):
+  # 【初始化檢查】確保該科目的專屬資料夾存在，如果不存在就自動建立一個
+  if not os.path.exists(folder_path):
+    os.makedirs(folder_path)
 
   now = datetime.datetime.now()
   year_str = str(now.year)
   month_str = f'{now.month:02d}' 
 
-  pattern = os.path.join(DATA_FOLDER, f'*{year_str}*{month_str}*.xlsx')
+  # ====================================================
+  # 讀取方式 1：精準尋找包含「當前年月」的 Excel 檔案
+  # 情境：老師上傳的檔案名稱很標準，包含目前的年份與月份。
+  # 邏輯：利用 glob 模糊搜尋檔名中同時包含「今年(例如2024)」與「當月(例如05)」的 .xlsx 檔。
+  # 例如會找到：'2024年05月.xlsx' 或 '物理薪資_2024_05_final.xlsx'
+  # ====================================================
+  pattern = os.path.join(folder_path, f'*{year_str}*{month_str}*.xlsx')
   matched_files = glob.glob(pattern)
 
   if matched_files:
+    # 如果同時找到多個符合年月條件的檔案，則回傳「最後修改時間 (getmtime)」最新的那一個
     return max(matched_files, key=os.path.getmtime)
 
-  all_excel_files = glob.glob(os.path.join(DATA_FOLDER, '*.xlsx'))
+  # ====================================================
+  # 讀取方式 2：退而求其次，尋找資料夾內「最新修改」的任何 Excel 檔
+  # 情境：老師上傳的檔案名稱忘記打上年月，或是還沒上傳本月的新檔案。
+  # 邏輯：掃描該資料夾下所有的 .xlsx 檔案，不論檔名是什麼，直接抓取「最後被修改過」的那一個檔案當作目標。
+  # ====================================================
+  all_excel_files = glob.glob(os.path.join(folder_path, '*.xlsx'))
   if all_excel_files:
     return max(all_excel_files, key=os.path.getmtime)
 
-  return os.path.join(DATA_FOLDER, f'薪資計算器{year_str}(NEW).xlsx')
+  # ====================================================
+  # 讀取方式 3：完全找不到檔案時的「預設防呆檔名」
+  # 情境：這是一個全新的科目，資料夾裡面空空如也，完全沒有任何 Excel 檔案。
+  # 邏輯：為了避免程式回傳 None 導致後續讀取時崩潰，這裡會拼湊一個「預設的虛擬路徑」回傳。
+  # 後續的 send_bills_logic 拿到這個路徑後，用 os.path.exists 檢查發現檔案不存在，就能優雅地回覆錯誤訊息給老師。
+  # ====================================================
+  return os.path.join(folder_path, f'薪資計算器{year_str}(NEW).xlsx')
 
 
 def load_data():
@@ -492,13 +511,21 @@ def handle_message(event):
         return
 
 
-def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None, lookback_months=6):
-  excel_file_path = get_current_month_excel_path()
+def send_bills_logic(line_bot_api, verified_bindings, subject_code, target_student_id=None, lookback_months=6):
+  # 1. 取得該科目的相關資訊與資料夾路徑
+  sub_info = SUBJECT_INFO.get(subject_code)
+  if not sub_info:
+      return f'❌ 系統錯誤：找不到科目代碼 {subject_code} 的設定。'
+  
+  folder_path = sub_info['folder']
+  subject_name = sub_info['name']
+  
+  excel_file_path = get_current_month_excel_path(folder_path)
 
   if not os.path.exists(excel_file_path):
     return (
-        f'找不到對應月份的 Excel 檔案 ({excel_file_path})，'
-        '請確認是否已放置於 data 資料夾中。'
+        f'找不到【{subject_name}】對應月份的 Excel 檔案 ({excel_file_path})，'
+        '請確認是否已放置於該科目的專屬資料夾中。'
     )
 
   try:
@@ -516,7 +543,7 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None, lo
     processed_sheets = []
 
     # ==========================================
-    # 加入 with 區塊，確保 Excel 讀取完畢後立刻釋放檔案鎖定
+    # 讀取 Excel with 區塊，確保 Excel 讀取完畢後立刻釋放檔案鎖定
     # ==========================================
     with pd.ExcelFile(excel_file_path) as xls:
         # 動態依照輸入的月份進行回溯，如果 lookback_months 是 3，就會是 range(2, -1, -1)
@@ -622,20 +649,22 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None, lo
                         'book_fee': book_fee,
                         'remark': remark
                     })
-    # ==========================================
-    # 程式執行到這裡，離開了 with 區塊，Excel 檔案已經完全釋放並關閉！
-    # ==========================================
 
     if not student_unpaid_map:
-      return f'掃描了 {len(processed_sheets)} 個月份的工作表，目前所有學生皆已完成繳費或無欠款。'
+      return f'【{subject_name}】掃描了 {len(processed_sheets)} 個月份，目前所有學生皆已完成繳費或無欠款。'
 
     matched_excel_students = set()
     grand_total_amount = 0
 
     # ==========================================
-    # 3. 比對並發送帳單 (含過濾與單發功能)
+    # 2. 讀取新的巢狀字典並比對並發送帳單
     # ==========================================
-    for user_id, bound_student_records in verified_bindings.items():
+    for user_id, user_subjects in verified_bindings.items():
+      # 只拿出該家長在這個科目的陣列 (如果沒綁定這科，回傳空陣列)
+      bound_student_records = user_subjects.get(subject_code, [])
+      if not bound_student_records:
+          continue
+
       parent_student_details = []
       parent_total_amount = 0
 
@@ -664,14 +693,12 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None, lo
           matched_excel_students.add(bound_id)
 
       if parent_student_details:
-        message_content = (
-            f'親愛的家長您好\n\n跟您報一下'
-        )
+        message_content = f'親愛的家長您好\n\n跟您報一下'
 
         for record in parent_student_details:
           message_content += (
               f'\n--------------------\n'
-              f'{record["name"]}，{record["month_str"]}的物理學費：\n\n'
+              f'{record["name"]}，{record["month_str"]}的【{subject_name}】學費：\n\n'
               f'• 上課時數：{record["hours"]}\n'
               f'• 薪資/單價：{record["salary"]}'
           )
@@ -709,15 +736,15 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None, lo
     # 如果是單獨發送，回傳單獨發送的結果
     if target_student_id:
         if target_student_id not in matched_excel_students:
-            return f'⚠️ 無法發送：找不到編號【{target_student_id}】的欠費資料，或是該學生尚未綁定家長。'
-        return f'✅ 已成功單獨發送編號【{target_student_id}】的帳單給家長！\n（已掃描過去 {lookback_months} 個月紀錄）'
+            return f'⚠️ 無法發送：找不到編號【{target_student_id}】的【{subject_name}】欠費資料，或是該學生尚未綁定家長。'
+        return f'✅ 已成功單獨發送編號【{target_student_id}】的【{subject_name}】帳單！\n（已掃描過去 {lookback_months} 個月紀錄）'
 
     # 全部發送的統計結果
     total_unpaid_students = len(student_unpaid_map)
     unsent_count = total_unpaid_students - len(matched_excel_students)
 
     return (
-        f'【帳單發送統計結果（基準月：{target_sheet}）】\n'
+        f'【{subject_name} 帳單發送統計（基準月：{target_sheet}）】\n'
         f'• 成功發送學生筆數：{len(matched_excel_students)} 筆\n'
         f'• 欠費未發送筆數：{unsent_count} 筆（尚未綁定家長）\n'
         f'• 總計欠費學生筆數：{total_unpaid_students} 筆\n'
@@ -725,7 +752,7 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None, lo
         f'（已掃描過去 {lookback_months} 個月紀錄）'
     )
   except Exception as e:
-    return f'發送帳單時發生錯誤: {str(e)}'
+    return f'發送【{subject_name}】帳單時發生錯誤: {str(e)}'
 
 # scheduler = BackgroundScheduler()
 
