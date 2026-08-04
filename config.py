@@ -147,6 +147,51 @@ def generate_invite_key(sub_code, user_id):
     return None, "❌ 系統錯誤，無法產生金鑰。"
 
 # ==========================================
+# 管理老師可以刪除老師
+# ==========================================
+def remove_teacher_from_subject(sub_code, target_teacher_id, admin_user_id, admin_user_ids):
+    """管理老師將某位老師從指定學科的 teachers 名單中移除"""
+    if not os.path.exists(SUBJECTS_FILE):
+        return False, "⚠️ 找不到 subjects.json 檔案。"
+
+    try:
+        with open(SUBJECTS_FILE, 'r', encoding='utf-8') as f:
+            raw_subjects = json.load(f)
+        
+        if sub_code not in raw_subjects:
+            return False, f"⚠️ 找不到代碼為【{sub_code}】的學科。"
+
+        sub_data = raw_subjects[sub_code]
+        sub_name = sub_data.get("name", sub_code)
+
+        # 權限檢查：必須是系統管理員，或是該科目的指定管理老師
+        if admin_user_id not in admin_user_ids and sub_data.get("admin_teacher") != admin_user_id:
+            return False, "⚠️ 您不是該科目的管理老師，無權移除老師。"
+
+        teachers_list = sub_data.get("teachers", [])
+        
+        if target_teacher_id not in teachers_list:
+            return False, "⚠️ 該使用者本來就不在此學科的老師名單中。"
+            
+        # 不允許管理老師把自己從 teachers 裡面直接拔掉（需透過刪除學科或轉移管理權）
+        if target_teacher_id == sub_data.get("admin_teacher"):
+            return False, "⚠️ 不能移除學科的管理老師本人。"
+
+        # 從名單中移除
+        teachers_list.remove(target_teacher_id)
+        sub_data["teachers"] = teachers_list
+
+        # 寫回檔案
+        with open(SUBJECTS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(raw_subjects, f, ensure_ascii=False, indent=4)
+
+        # 重新載入設定
+        reload_config()
+        return True, sub_name
+    except Exception as e:
+        return False, f"❌ 移除老師失敗: {e}"
+
+# ==========================================
 # 新老師可以在聊天室中輸入金鑰來加入學科
 # ==========================================
 def redeem_invite_key(user_id, invite_key):

@@ -602,6 +602,110 @@ def handle_postback(event):
                     )
                 )
             return
+        
+        # ==========================================
+        # 處理路線 G-1：管理老師選定學科後，顯示該科的老師清單按鈕
+        # ==========================================
+        if action == 'remove_teacher_sub':
+            sub_code = postback_data.get('sub')
+            if sub_code not in SUBJECT_INFO:
+                line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='⚠️ 找不到該學科。')]))
+                return
+
+            sub_name = SUBJECT_INFO[sub_code]['name']
+            teachers = SUBJECT_INFO[sub_code].get('teachers', [])
+            admin_t = SUBJECT_INFO[sub_code].get('admin_teacher')
+            other_teachers = [t for t in teachers if t != admin_t]
+
+            if not other_teachers:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=f'⚠️ 【{sub_name}】目前除了您以外，沒有其他授課老師可移除。')]
+                    )
+                )
+                return
+
+            items = []
+            for t_id in other_teachers:
+                # 💡 【這裡加入】即時向 LINE 查詢該老師的暱稱
+                try:
+                    profile = line_bot_api.get_profile(t_id)
+                    t_name = profile.display_name
+                except Exception:
+                    t_name = f"老師 ({t_id[-4:]})"
+                
+                label_text = f"移除 {t_name}"
+                if len(label_text) > 20:
+                    label_text = label_text[:17] + "..."
+
+                p_data = f"action=confirm_remove_t&sub={sub_code}&target={t_id}"
+                
+                items.append(
+                    QuickReplyItem(
+                        action=PostbackAction(
+                            label=label_text,
+                            data=p_data,
+                            display_text=f"移除 {t_name}"
+                        )
+                    )
+                )
+
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[
+                        TextMessage(
+                            text=f"📋 請選擇您想要從【{sub_name}】移除的授課老師：",
+                            quick_reply=QuickReply(items=items)
+                        )
+                    ]
+                )
+            )
+            return
+
+        # ==========================================
+        # 處理路線 G-2：確認執行移除該老師，並發送通知
+        # ==========================================
+        if action == 'confirm_remove_t':
+            sub_code = postback_data.get('sub')
+            target_id = postback_data.get('target')
+
+            success, result_msg = remove_teacher_from_subject(sub_code, target_id, teacher_id, ADMIN_USER_IDS)
+            
+            if success:
+                sub_name = result_msg
+                
+                # 1. 回覆管理老師移除成功
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=f'✅ 已成功從【{sub_name}】中移除該位授課老師。')]
+                    )
+                )
+
+                # 2. 主動發送 Push Message 通知被移除的老師
+                try:
+                    line_bot_api.push_message(
+                        PushMessageRequest(
+                            to=target_id,
+                            messages=[
+                                TextMessage(
+                                    text=f'⚠️ 【系統通知】\n您已被管理老師從學科【{sub_name}】的授課名單中移除。'
+                                )
+                            ]
+                        )
+                    )
+                except Exception as e:
+                    print(f"發送移除通知給老師失敗: {e}")
+            else:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=result_msg)]
+                    )
+                )
+            return
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
@@ -1214,6 +1318,114 @@ def handle_message(event):
                 messages=[
                     TextMessage(
                         text="📋 請選擇您要為哪一個學科產生新老師邀請金鑰：",
+                        quick_reply=QuickReply(items=items)
+                    )
+                ]
+            )
+        )
+        return
+
+      # --------------------------
+      # 管理老師：移除老師流程開始
+      # --------------------------
+      elif text == '移除老師' or text.startswith('移除老師'):
+        # 找出該使用者管理的科目
+        managed_subjects = []
+        for sub_code, sub_info in SUBJECT_INFO.items():
+            if sub_code.startswith('_'):
+                continue
+            admin_t = sub_info.get('admin_teacher')
+            if user_id in ADMIN_USER_IDS or admin_t == user_id:
+                managed_subjects.append(sub_code)
+
+        if not managed_subjects:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='⚠️ 您目前沒有被指定為任何學科的管理老師。')]
+                )
+            )
+            return
+
+        # 如果只管理 1 科，直接進入選擇要移除哪位老師的步驟
+        if len(managed_subjects) == 1:
+            sub_code = managed_subjects[0]
+            sub_name = SUBJECT_INFO[sub_code]['name']
+            
+            teachers = SUBJECT_INFO[sub_code].get('teachers', [])
+            admin_t = SUBJECT_INFO[sub_code].get('admin_teacher')
+            other_teachers = [t for t in teachers if t != admin_t]
+
+            if not other_teachers:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=f'⚠️ 【{sub_name}】目前除了您以外，沒有其他授課老師可移除。')]
+                    )
+                )
+                return
+
+            items = []
+            for t_id in other_teachers:
+                # 💡 【這裡加入】即時向 LINE 查詢該老師的暱稱
+                try:
+                    profile = line_bot_api.get_profile(t_id)
+                    t_name = profile.display_name
+                except Exception:
+                    t_name = f"老師 ({t_id[-4:]})"
+                
+                label_text = f"移除 {t_name}"
+                # 避免超過 LINE 按鈕 label 的 20 字元限制
+                if len(label_text) > 20:
+                    label_text = label_text[:17] + "..."
+
+                postback_data = f"action=confirm_remove_t&sub={sub_code}&target={t_id}"
+                
+                items.append(
+                    QuickReplyItem(
+                        action=PostbackAction(
+                            label=label_text,
+                            data=postback_data,
+                            display_text=f"移除 {t_name}"
+                        )
+                    )
+                )
+
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[
+                        TextMessage(
+                            text=f"📋 請選擇您想要從【{sub_name}】移除的授課老師：",
+                            quick_reply=QuickReply(items=items)
+                        )
+                    ]
+                )
+            )
+            return
+
+        # 如果有多個管理的學科，先讓管理老師選擇學科
+        items = []
+        for sub_code in managed_subjects:
+            sub_name = SUBJECT_INFO[sub_code]['name']
+            postback_data = f"action=remove_teacher_sub&sub={sub_code}"
+            
+            items.append(
+                QuickReplyItem(
+                    action=PostbackAction(
+                        label=sub_name,
+                        data=postback_data,
+                        display_text=f"管理【{sub_name}】老師"
+                    )
+                )
+            )
+
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text="📋 請選擇您要管理哪一個學科的老師名單：",
                         quick_reply=QuickReply(items=items)
                     )
                 ]
