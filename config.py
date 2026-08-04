@@ -4,6 +4,7 @@ import hashlib
 from dotenv import load_dotenv
 import secrets
 import datetime
+import shutil
 
 # ==========================================
 # 基礎路徑設定
@@ -332,7 +333,7 @@ def create_new_subject_by_key(user_id, subject_key, subject_name):
 # 管理員可以刪除學科
 # ==========================================
 def delete_subject_by_admin(sub_code, admin_user_id, admin_user_ids):
-    """系統管理員刪除指定學科，並回傳 (是否成功, 學科名稱, 管理老師ID)"""
+    """系統管理員刪除指定學科，同時刪除對應的 data 資料夾與設定"""
     if admin_user_id not in admin_user_ids:
         return False, "⚠️ 只有系統管理員可以刪除學科。", None
 
@@ -346,13 +347,25 @@ def delete_subject_by_admin(sub_code, admin_user_id, admin_user_ids):
 
             sub_data = raw_subjects[sub_code]
             sub_name = sub_data.get("name", sub_code)
-            admin_teacher_id = sub_data.get("admin_teacher") # 取得該學科的管理老師 ID
+            admin_teacher_id = sub_data.get("admin_teacher")
+            
+            # 💡 取得該學科對應的資料夾名稱（通常 folder_name 或 sub_code 就是資料夾名稱）
+            folder_name = sub_data.get("folder_name", sub_code)
+            target_data_dir = os.path.join(DATA_FOLDER, folder_name)
 
-            # 從字典中刪除該學科
+            # 1. 從字典中刪除該學科設定
             del raw_subjects[sub_code]
 
             with open(SUBJECTS_FILE, 'w', encoding='utf-8') as f:
                 json.dump(raw_subjects, f, ensure_ascii=False, indent=4)
+
+            # 2. 💡 同步刪除 data 裡對應的實體資料夾與所有內部檔案
+            if os.path.exists(target_data_dir):
+                try:
+                    shutil.rmtree(target_data_dir)
+                    print(f"已成功刪除實體資料夾: {target_data_dir}")
+                except Exception as e:
+                    print(f"刪除實體資料夾失敗: {e}")
 
             # 重新載入設定
             reload_config()
