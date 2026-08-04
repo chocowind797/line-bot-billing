@@ -190,25 +190,31 @@ def handle_message(event):
     # ==========================
     # 1. 老師專屬指令處理
     # ==========================
+    # ==========================
+    # 1. 老師專屬指令處理
+    # ==========================
     if user_id in TEACHER_USER_IDS:
-      if text == '發送帳單':
-        # 1. 立即回覆老師，避免 LINE Webhook 超時
+      if text.startswith('發送帳單'):
+        # 拆解指令與數字
+        parts = text.split()
+        lookback_months = 6  # 預設回溯 6 個月
+        if len(parts) > 1:
+            try:
+                lookback_months = max(1, int(parts[1])) # 確保至少為 1
+            except ValueError:
+                pass
+
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text='⏳ 系統已開始在背景處理並發送帳單，完成後會主動通知您，請稍候...')]
+                messages=[TextMessage(text=f'⏳ 系統已開始在背景處理並發送帳單（回溯 {lookback_months} 個月），完成後會主動通知您，請稍候...')]
             )
         )
-        # 2. 定義背景任務函式
-        def background_send_task(teacher_id, bindings):
-            # 在新的執行緒中，需要重新建立 ApiClient 連線
+
+        def background_send_task(teacher_id, bindings, lb_months):
             with ApiClient(configuration) as bg_api_client:
                 bg_line_bot_api = MessagingApi(bg_api_client)
-                
-                # 執行發送邏輯
-                result_msg = send_bills_logic(bg_line_bot_api, bindings)
-                
-                # 發送完成後，推播結果給老師
+                result_msg = send_bills_logic(bg_line_bot_api, bindings, lookback_months=lb_months)
                 bg_line_bot_api.push_message(
                     push_message_request=PushMessageRequest(
                         to=teacher_id, 
@@ -216,32 +222,49 @@ def handle_message(event):
                     )
                 )
 
-        # 3. 開啟新的執行緒去執行背景任務
-        thread = threading.Thread(target=background_send_task, args=(user_id, verified_bindings))
+        thread = threading.Thread(target=background_send_task, args=(user_id, verified_bindings, lookback_months))
         thread.start()
         return
       
       elif text.startswith('單發帳單'):
-        # 單獨發送，例如輸入 "單發帳單 2601"
-        parts = text.split(maxsplit=1)
+        parts = text.split()
         if len(parts) < 2:
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text='格式錯誤！請輸入例如：單發帳單 2601')]
+                    messages=[TextMessage(text='格式錯誤！請輸入例如：單發帳單 2601 或 單發帳單 2601 3')]
                 )
             )
             return
             
         target_id = parts[1].strip()
-        # 呼叫發送邏輯，並傳入指定的學號
-        result_msg = send_bills_logic(line_bot_api, verified_bindings, target_student_id=target_id)
+        lookback_months = 6  # 預設回溯 6 個月
+        if len(parts) > 2:
+            try:
+                lookback_months = max(1, int(parts[2]))
+            except ValueError:
+                pass
+                
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=result_msg)],
+                messages=[TextMessage(text=f'⏳ 系統已開始在背景處理單發帳單（編號 {target_id}，回溯 {lookback_months} 個月），請稍候...')]
             )
         )
+
+        def background_single_task(teacher_id, bindings, t_id, lb_months):
+            with ApiClient(configuration) as bg_api_client:
+                bg_line_bot_api = MessagingApi(bg_api_client)
+                result_msg = send_bills_logic(bg_line_bot_api, bindings, target_student_id=t_id, lookback_months=lb_months)
+                bg_line_bot_api.push_message(
+                    push_message_request=PushMessageRequest(
+                        to=teacher_id, 
+                        messages=[TextMessage(text=result_msg)]
+                    )
+                )
+
+        thread = threading.Thread(target=background_single_task, args=(user_id, verified_bindings, target_id, lookback_months))
+        thread.start()
         return
 
     # ==========================
@@ -325,7 +348,7 @@ def handle_message(event):
       return
 
 
-def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
+def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None, lookback_months=6):
   excel_file_path = get_current_month_excel_path()
 
   if not os.path.exists(excel_file_path):
@@ -352,7 +375,8 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
     # 加入 with 區塊，確保 Excel 讀取完畢後立刻釋放檔案鎖定
     # ==========================================
     with pd.ExcelFile(excel_file_path) as xls:
-        for i in range(5, -1, -1):
+        # 動態依照輸入的月份進行回溯，如果 lookback_months 是 3，就會是 range(2, -1, -1)
+        for i in range(lookback_months - 1, -1, -1):
             calc_month = target_month - i
             calc_year = target_year
             while calc_month <= 0:
@@ -529,12 +553,13 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
                 to=user_id, messages=[TextMessage(text=message_content)]
             )
         )
+        time.sleep(0.1) # 增加微小延遲，避免 API 阻擋
 
     # 如果是單獨發送，回傳單獨發送的結果
     if target_student_id:
         if target_student_id not in matched_excel_students:
             return f'⚠️ 無法發送：找不到編號【{target_student_id}】的欠費資料，或是該學生尚未綁定家長。'
-        return f'✅ 已成功單獨發送編號【{target_student_id}】的帳單給家長！'
+        return f'✅ 已成功單獨發送編號【{target_student_id}】的帳單給家長！\n（已掃描過去 {lookback_months} 個月紀錄）'
 
     # 全部發送的統計結果
     total_unpaid_students = len(student_unpaid_map)
@@ -546,7 +571,7 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
         f'• 欠費未發送筆數：{unsent_count} 筆（尚未綁定家長）\n'
         f'• 總計欠費學生筆數：{total_unpaid_students} 筆\n'
         f'• 本期已發送總金額：{grand_total_amount:g} 元\n'
-        f'（已掃描過去 6 個月紀錄）'
+        f'（已掃描過去 {lookback_months} 個月紀錄）'
     )
   except Exception as e:
     return f'發送帳單時發生錯誤: {str(e)}'
