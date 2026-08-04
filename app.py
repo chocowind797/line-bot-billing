@@ -819,10 +819,14 @@ def handle_message(event):
           return
 
       invite_key = parts[1].strip().upper()
-      success, result_msg = redeem_invite_key(user_id, invite_key)
+      
+      # 💡 接收三個回傳值 (是否成功, 結果訊息/科目名稱, 管理老師ID)
+      success, result_msg, admin_teacher_id = redeem_invite_key(user_id, invite_key)
       
       if success:
           sub_name = result_msg
+          
+          # 1. 回覆新老師加入成功
           line_bot_api.reply_message(
               ReplyMessageRequest(
                   reply_token=event.reply_token,
@@ -833,6 +837,30 @@ def handle_message(event):
                   ]
               )
           )
+
+          # 2. 取得新老師的名字（透過 LINE API）
+          try:
+              profile = line_bot_api.get_profile(user_id)
+              new_teacher_name = profile.display_name
+          except Exception:
+              new_teacher_name = f"新老師 ({user_id[-4:]})"
+
+          # 3. 主動發送 Push Message 通知該科目的管理老師
+          if admin_teacher_id and admin_teacher_id != user_id:
+              try:
+                  line_bot_api.push_message(
+                      PushMessageRequest(
+                          to=admin_teacher_id,
+                          messages=[
+                              TextMessage(
+                                  text=f'🔔 【系統通知】\n有一位新老師【{new_teacher_name}】透過邀請金鑰加入了您管理的學科【{sub_name}】！'
+                              )
+                          ]
+                      )
+                  )
+              except Exception as e:
+                  print(f"發送新老師加入通知給管理老師失敗: {e}")
+
       else:
           line_bot_api.reply_message(
               ReplyMessageRequest(

@@ -195,9 +195,9 @@ def remove_teacher_from_subject(sub_code, target_teacher_id, admin_user_id, admi
 # 新老師可以在聊天室中輸入金鑰來加入學科
 # ==========================================
 def redeem_invite_key(user_id, invite_key):
-    """新老師輸入金鑰來加入科目（從 keys.json 讀取與驗證）"""
+    """新老師輸入金鑰來加入科目（成功後回傳：是否成功, 科目名稱或錯誤訊息, 管理老師ID）"""
     if not os.path.exists(KEYS_FILE) or not os.path.exists(SUBJECTS_FILE):
-        return False, "⚠️ 找不到設定檔或金鑰檔。"
+        return False, "⚠️ 找不到設定檔或金鑰檔。", None
 
     try:
         with open(KEYS_FILE, 'r', encoding='utf-8') as f:
@@ -205,7 +205,7 @@ def redeem_invite_key(user_id, invite_key):
         
         teacher_keys = keys_data.get("teacher_invite_keys", {})
         if invite_key not in teacher_keys:
-            return False, "⚠️ 無效的金鑰或已被使用。"
+            return False, "⚠️ 無效的金鑰或已被使用。", None
         
         target_sub_code = teacher_keys[invite_key].get("sub_code")
 
@@ -213,16 +213,18 @@ def redeem_invite_key(user_id, invite_key):
             raw_subjects = json.load(f)
         
         if target_sub_code not in raw_subjects:
-            return False, "⚠️ 該金鑰對應的學科已不存在。"
+            return False, "⚠️ 該金鑰對應的學科已不存在。", None
         
         sub_data = raw_subjects[target_sub_code]
         if "teachers" not in sub_data:
             sub_data["teachers"] = []
         
         if user_id in sub_data["teachers"] or user_id == sub_data.get("admin_teacher"):
-            return False, "⚠️ 您已經是該科目的老師了，不需要重複加入。"
+            return False, "⚠️ 您已經是該科目的老師了，不需要重複加入。", None
         
+        # 將新老師加入名單
         sub_data["teachers"].append(user_id)
+        admin_teacher_id = sub_data.get("admin_teacher") # 取得管理老師 ID
         
         # 單次使用：從 keys.json 中刪除該金鑰
         del keys_data["teacher_invite_keys"][invite_key]
@@ -236,11 +238,11 @@ def redeem_invite_key(user_id, invite_key):
             json.dump(raw_subjects, f, ensure_ascii=False, indent=4)
         
         reload_config()
-        return True, sub_data["name"]
+        return True, sub_data["name"], admin_teacher_id
         
     except Exception as e:
         print(f"兌換金鑰失敗: {e}")
-    return False, "❌ 系統錯誤，無法驗證金鑰。"
+    return False, "❌ 系統錯誤，無法驗證金鑰。", None
 
 # ==========================================
 # 管理員可以在聊天室中建立新增學科的金鑰
