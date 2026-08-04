@@ -51,6 +51,8 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 PENDING_PAYMENT_EDIT = {}
 # 記錄正在等待輸入新學科名稱的使用者 {user_id: subject_key}
 PENDING_SUBJECT_CREATION = {}
+# 記錄老師正在建立學生綁定的狀態 {teacher_id: {"step": "input_student", "sub_code": "xxx"}}
+PENDING_STUDENT_BINDING = {}
 
 def get_current_month_excel_path(folder_path):
   # 【初始化檢查】確保該科目的專屬資料夾存在，如果不存在就自動建立一個
@@ -752,6 +754,39 @@ def handle_postback(event):
                 )
             return
 
+        # ==========================================
+        # 處理路線 H-1：老師透過按鈕選定學科後，提示輸入學號與名字
+        # ==========================================
+        if action == 'bind_select_sub':
+            sub_code = postback_data.get('sub')
+            if sub_code not in SUBJECT_INFO:
+                line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='⚠️ 找不到該學科。')]))
+                return
+
+            sub_name = SUBJECT_INFO[sub_code]['name']
+            
+            # 記錄狀態
+            PENDING_STUDENT_BINDING[teacher_id] = {
+                "sub_code": sub_code
+            }
+
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[
+                        TextMessage(
+                            text=(
+                                f'📌 目標學科：【{sub_name}】\n\n'
+                                f'請直接在此聊天室輸入要給學生的【學號】與【名字】（中間用空格隔開）\n'
+                                f'例如：`2601 王小明`\n\n'
+                                f'（若想放棄，請輸入「取消」）'
+                            )
+                        )
+                    ]
+                )
+            )
+            return
+
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
   user_id = event.source.user_id
@@ -765,8 +800,68 @@ def handle_message(event):
     if text.startswith('t'):
         print(ADMIN_USER_IDS)
     # ==========================
-    # 檢查是否正在進行「修改說明」的第二階段輸入
+    # 二階段輸入
     # ==========================
+    # --------------------------
+    # 檢查是否正在進行「產生學生綁定」的第二階段（輸入學號與名字）
+    # --------------------------
+    if user_id in PENDING_STUDENT_BINDING:
+        if text in ['取消', '取消產生']:
+            PENDING_STUDENT_BINDING.pop(user_id, None)
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='❌ 已取消產生綁定操作。')]
+                )
+            )
+            return
+
+        data_info = PENDING_STUDENT_BINDING.pop(user_id)
+        sub_code = data_info["sub_code"]
+        sub_name = SUBJECT_INFO[sub_code]['name']
+
+        parts = text.split()
+        if len(parts) < 2:
+            # 如果格式不對，把狀態放回去讓老師重新輸入
+            PENDING_STUDENT_BINDING[user_id] = {"sub_code": sub_code}
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[
+                        TextMessage(
+                            text='⚠️ 格式錯誤！請同時輸入「學號」與「名字」，中間用空格隔開。\n例如：`12 傅紹宸`\n請重新輸入：（或輸入「取消」）'
+                        )
+                    ]
+                )
+            )
+            return
+
+        student_no = parts[0].strip()
+        student_name = parts[1].strip()
+
+        # 組裝要給家長複製的綁定訊息
+        binding_template = (
+            f'📱 【{sub_name}】家長綁定通知\n\n'
+            f'請家長複製下方整段文字，並傳送給官方帳號來完成綁定：\n'
+            f'----------------------------------\n'
+            f'我是{sub_code}-{student_no}--{student_name}\n'
+            f'----------------------------------\n'
+            f'（送出後即完成學生身分對應！）'
+        )
+
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(text=binding_template),
+                    TextMessage(text=f'我是{sub_code}-{student_no}--{student_name}'),
+                ]
+            )
+        )
+        return
+    # --------------------------
+    # 檢查是否正在進行「修改說明」的第二階段輸入
+    # --------------------------
     if user_id in PENDING_PAYMENT_EDIT:
         # 💡 如果老師輸入「取消」或「取消修改」，則終止流程並清除狀態
         if text in ['取消', '取消修改']:
@@ -805,9 +900,9 @@ def handle_message(event):
                 )
             )
         return
-    # ==========================
+    # --------------------------
     # 檢查是否正在進行「建立新學科」的第二階段（輸入學科名稱）
-    # ==========================
+    # --------------------------
     if user_id in PENDING_SUBJECT_CREATION:
         if text in ['取消', '取消建立']:
             PENDING_SUBJECT_CREATION.pop(user_id, None)
@@ -1427,6 +1522,84 @@ def handle_message(event):
                 messages=[
                     TextMessage(
                         text="📋 請選擇您要為哪一個學科產生新老師邀請金鑰：",
+                        quick_reply=QuickReply(items=items)
+                    )
+                ]
+            )
+        )
+        return
+
+      # --------------------------
+      # 老師：開始產生學生綁定訊息流程
+      # --------------------------
+      elif text == '產生綁定':
+        # 找出該老師有權限的科目（包括系統管理員或授課老師名單內的科目）
+        allowed_subjects = []
+        for sub_code, sub_info in SUBJECT_INFO.items():
+            if sub_code.startswith('_'):
+                continue
+            admin_t = sub_info.get('admin_teacher')
+            teachers = sub_info.get('teachers', [])
+            if user_id in ADMIN_USER_IDS or user_id == admin_t or user_id in teachers:
+                allowed_subjects.append(sub_code)
+
+        if not allowed_subjects:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='⚠️ 您目前沒有參與任何學科，無法產生綁定訊息。')]
+                )
+            )
+            return
+
+        # 如果只有 1 科，直接進入下一步：提示輸入學號與名字
+        if len(allowed_subjects) == 1:
+            sub_code = allowed_subjects[0]
+            sub_name = SUBJECT_INFO[sub_code]['name']
+            
+            PENDING_STUDENT_BINDING[user_id] = {
+                "sub_code": sub_code
+            }
+
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[
+                        TextMessage(
+                            text=(
+                                f'📌 目標學科：【{sub_name}】\n\n'
+                                f'請直接在此聊天室輸入要給學生的【學號】與【名字】（中間用空格隔開）\n'
+                                f'例如：`2601 王小明`\n\n'
+                                f'（若想放棄，請輸入「取消」）'
+                            )
+                        )
+                    ]
+                )
+            )
+            return
+
+        # 如果有多個學科，彈出按鈕讓老師選擇
+        items = []
+        for sub_code in allowed_subjects:
+            sub_name = SUBJECT_INFO[sub_code]['name']
+            postback_data = f"action=bind_select_sub&sub={sub_code}"
+            
+            items.append(
+                QuickReplyItem(
+                    action=PostbackAction(
+                        label=sub_name,
+                        data=postback_data,
+                        display_text=f"選擇【{sub_name}】"
+                    )
+                )
+            )
+
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text="📋 請選擇您要為哪一個學科產生學生綁定訊息：",
                         quick_reply=QuickReply(items=items)
                     )
                 ]
