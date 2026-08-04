@@ -79,15 +79,8 @@ def load_data():
     try:
       with open(DATA_FILE_PATH, 'r', encoding='utf-8') as f:
         data = json.load(f)
-        # 只讀取已驗證的綁定資料
-        verified = data.get('verified', {})
-
-        # 確保舊資料格式為 List
-        for uid in list(verified.keys()):
-          if isinstance(verified[uid], str):
-            verified[uid] = [verified[uid]]
-
-        return verified
+        # 直接回傳，不需要再做 List 的轉型檢查
+        return data.get('verified', {})
     except Exception:
       pass
   return {}
@@ -212,16 +205,27 @@ def handle_postback(event):
             return
 
         if action == 'approve':
-            # 1. 將資料正式寫入 JSON
+            # 1. 拆解出「科目代碼」與「學生學號--姓名」
+            # 按鈕傳來的 bound_string 是 "1-2601--小明"
+            sub_code, student_info = bound_string.split('-', 1)
+
+            # 2. 將資料正式寫入 JSON (採用巢狀字典結構)
             verified_bindings = load_data()
-            if parent_uid not in verified_bindings:
-                verified_bindings[parent_uid] = []
             
-            if bound_string not in verified_bindings[parent_uid]:
-                verified_bindings[parent_uid].append(bound_string)
+            # (1) 確保該家長擁有專屬的字典
+            if parent_uid not in verified_bindings:
+                verified_bindings[parent_uid] = {}
+            
+            # (2) 確保該家長底下的該科目擁有陣列
+            if sub_code not in verified_bindings[parent_uid]:
+                verified_bindings[parent_uid][sub_code] = []
+            
+            # (3) 檢查不重複後，寫入乾淨的「學號--姓名」
+            if student_info not in verified_bindings[parent_uid][sub_code]:
+                verified_bindings[parent_uid][sub_code].append(student_info)
                 save_data(verified_bindings)
 
-            # 2. 回覆老師
+            # 2. 回覆老師 (為了讓老師看懂，還是顯示完整的 bound_string)
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
@@ -232,9 +236,7 @@ def handle_postback(event):
             # 3. 通知家長
             try:
                 # 嘗試反向解析出科目名稱，讓家長看得懂
-                sub_code = bound_string.split('-')[0]
                 sub_name = SUBJECT_INFO.get(sub_code, {}).get('name', '該')
-                student_info = bound_string.split('-', 1)[1] # 取得 2601--小明
                 
                 line_bot_api.push_message(
                     push_message_request=PushMessageRequest(
