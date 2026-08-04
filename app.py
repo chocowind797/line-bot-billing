@@ -633,7 +633,7 @@ def send_bills_logic(line_bot_api, verified_bindings, subject_code, target_stude
 
   if not os.path.exists(excel_file_path):
     return (
-        f'找不到【{subject_name}】對應月份的 Excel 檔案 ({excel_file_path})，'
+        f'找不到【{subject_name}】對應月份的 Excel 檔案，'
         '請確認是否已放置於該科目的專屬資料夾中。'
     )
 
