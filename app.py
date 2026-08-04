@@ -416,7 +416,6 @@ def handle_postback(event):
             mode = postback_data.get('mode')       # 'batch' 或 'single'
             sub_code = postback_data.get('sub')    # 科目代碼 或 'all'
 
-            print(f'發送{sub_code}帳單')
             target_student_id = postback_data.get('sid')
             if target_student_id == 'none':
                 target_student_id = None
