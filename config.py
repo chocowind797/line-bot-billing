@@ -80,14 +80,9 @@ def update_subject_payment_info(sub_code, new_payment_info):
                 raw_subjects = json.load(f)
             
             if sub_code in raw_subjects:
-                # 更新該科目的 payment_info
                 raw_subjects[sub_code]["payment_info"] = new_payment_info
-                
-                # 寫回 subjects.json
                 with open(SUBJECTS_FILE, 'w', encoding='utf-8') as f:
                     json.dump(raw_subjects, f, ensure_ascii=False, indent=4)
-                
-                # 重新載入全域設定，讓變更立刻生效
                 reload_config()
                 return True
         except Exception as e:
