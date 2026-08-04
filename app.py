@@ -3,6 +3,7 @@ import glob
 import json
 import logging
 import threading
+import time
 import os
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
@@ -534,6 +535,9 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
                 to=user_id, messages=[TextMessage(text=message_content)]
             )
         )
+
+        # 新增：每次推播後暫停 0.1 秒，降低伺服器瞬間併發壓力
+        time.sleep(0.1)
 
     total_unpaid_students = len(student_unpaid_map)
     unsent_count = total_unpaid_students - len(matched_excel_students)
