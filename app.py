@@ -335,7 +335,6 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
     )
 
   try:
-    xls = pd.ExcelFile(excel_file_path)
     now = datetime.datetime.now()
     
     if now.month == 1:
@@ -344,118 +343,113 @@ def send_bills_logic(line_bot_api, verified_bindings, target_student_id=None):
     else:
         target_year = now.year
         target_month = now.month - 1
-    # target_year = now.year
-    # target_month = now.month - 1
-
+        
     student_unpaid_map = {}
     target_sheet = f"{str(target_year)[-2:]}年{target_month}月"
     processed_sheets = []
 
-    for i in range(0, -1, -1):
-        calc_month = target_month - i
-        calc_year = target_year
-        while calc_month <= 0:
-            calc_month += 12
-            calc_year -= 1
+    # ==========================================
+    # 加入 with 區塊，確保 Excel 讀取完畢後立刻釋放檔案鎖定
+    # ==========================================
+    with pd.ExcelFile(excel_file_path) as xls:
+        for i in range(5, -1, -1):
+            calc_month = target_month - i
+            calc_year = target_year
+            while calc_month <= 0:
+                calc_month += 12
+                calc_year -= 1
+                
+            short_year = str(calc_year)[-2:]
+            sheet_name = f'{short_year}年{calc_month}月'
             
-        short_year = str(calc_year)[-2:]
-        sheet_name = f'{short_year}年{calc_month}月'
-        
-        actual_sheet = None
-        if sheet_name in xls.sheet_names:
-            actual_sheet = sheet_name
-        elif i == 0:
-            actual_sheet = xls.sheet_names[0]
-            target_sheet = actual_sheet
-            
-        if not actual_sheet:
-            continue
-            
-        processed_sheets.append(actual_sheet)
-        df = pd.read_excel(xls, sheet_name=actual_sheet, header=None)
-
-        if df.empty:
-            continue
-
-        # ==========================================
-        # 1. 極速優化：掃描第一列 (Row 0)，建立所有欄位索引
-        # ==========================================
-        header_row = df.iloc[0]
-        col_idx_map = {}
-        
-        for c_idx, val in enumerate(header_row):
-            val_str = str(val).strip()
-            if '名字' in val_str or '姓名' in val_str: col_idx_map['name'] = c_idx
-            elif '學號' in val_str: col_idx_map['id'] = c_idx
-            elif '已繳' in val_str: col_idx_map['paid'] = c_idx
-            elif '備註' in val_str: col_idx_map['remark'] = c_idx
-            elif '時數小計' in val_str: col_idx_map['hours'] = c_idx
-            elif '薪資' in val_str: col_idx_map['salary'] = c_idx
-            elif '書籍/教材' in val_str: col_idx_map['book_fee'] = c_idx
-            elif '單一學生小計' in val_str: col_idx_map['subtotal'] = c_idx
-
-        # 如果連學號欄位都找不到，就跳過這張表
-        if 'id' not in col_idx_map:
-            continue
-            
-        # 防呆：如果標題剛好沒有寫名字，就預設拿學號的前一欄
-        if 'name' not in col_idx_map:
-            col_idx_map['name'] = max(0, col_idx_map['id'] - 1)
-
-        # ==========================================
-        # 2. 拋棄巢狀迴圈：直接根據索引讀取資料，時間複雜度大幅降低
-        # ==========================================
-        for r_idx in range(1, df.shape[0]):
-            raw_id = df.iloc[r_idx, col_idx_map['id']]
-            if pd.isna(raw_id):
+            actual_sheet = None
+            if sheet_name in xls.sheet_names:
+                actual_sheet = sheet_name
+            elif i == 0:
+                actual_sheet = xls.sheet_names[0]
+                target_sheet = actual_sheet
+                
+            if not actual_sheet:
                 continue
                 
-            s_id = str(raw_id).strip()
-            if s_id.endswith('.0'):
-                s_id = s_id[:-2]
-                
-            if not s_id or s_id == '學號' or s_id == 'None':
+            processed_sheets.append(actual_sheet)
+            df = pd.read_excel(xls, sheet_name=actual_sheet, header=None)
+
+            if df.empty:
                 continue
 
-            raw_name = df.iloc[r_idx, col_idx_map['name']]
-            s_name = str(raw_name).strip() if pd.notna(raw_name) else "未知姓名"
-
-            # 判斷是否已繳
-            is_paid = False
-            if 'paid' in col_idx_map:
-                paid_val = df.iloc[r_idx, col_idx_map['paid']]
-                if pd.notna(paid_val):
-                    p_str = str(paid_val).strip()
-                    if p_str in ['1', '1.0', '已繳', 'V', 'v']:
-                        is_paid = True
+            header_row = df.iloc[0]
+            col_idx_map = {}
             
-            if is_paid:
+            for c_idx, val in enumerate(header_row):
+                val_str = str(val).strip()
+                if '名字' in val_str or '姓名' in val_str: col_idx_map['name'] = c_idx
+                elif '學號' in val_str: col_idx_map['id'] = c_idx
+                elif '已繳' in val_str: col_idx_map['paid'] = c_idx
+                elif '備註' in val_str: col_idx_map['remark'] = c_idx
+                elif '時數小計' in val_str: col_idx_map['hours'] = c_idx
+                elif '薪資' in val_str: col_idx_map['salary'] = c_idx
+                elif '書籍/教材' in val_str: col_idx_map['book_fee'] = c_idx
+                elif '單一學生小計' in val_str: col_idx_map['subtotal'] = c_idx
+
+            if 'id' not in col_idx_map:
                 continue
-
-            # 讀取小計並確認是否有欠費
-            subtotal = 0
-            if 'subtotal' in col_idx_map:
-                raw_sub = df.iloc[r_idx, col_idx_map['subtotal']]
-                try: subtotal = float(raw_sub) if pd.notna(raw_sub) else 0
-                except: subtotal = 0
                 
-            if subtotal > 0:
-                hours = df.iloc[r_idx, col_idx_map['hours']] if 'hours' in col_idx_map else '略'
-                salary = df.iloc[r_idx, col_idx_map['salary']] if 'salary' in col_idx_map else '略'
-                book_fee = df.iloc[r_idx, col_idx_map['book_fee']] if 'book_fee' in col_idx_map else None
-                remark = df.iloc[r_idx, col_idx_map['remark']] if 'remark' in col_idx_map else None
+            if 'name' not in col_idx_map:
+                col_idx_map['name'] = max(0, col_idx_map['id'] - 1)
 
-                if s_id not in student_unpaid_map:
-                    student_unpaid_map[s_id] = {'name': s_name, 'records': []}
+            for r_idx in range(1, df.shape[0]):
+                raw_id = df.iloc[r_idx, col_idx_map['id']]
+                if pd.isna(raw_id):
+                    continue
                     
-                student_unpaid_map[s_id]['records'].append({
-                    'month_str': f"{calc_month}月份",
-                    'hours': hours if pd.notna(hours) else '略',
-                    'salary': salary if pd.notna(salary) else '略',
-                    'subtotal': subtotal,
-                    'book_fee': book_fee,
-                    'remark': remark
-                })
+                s_id = str(raw_id).strip()
+                if s_id.endswith('.0'):
+                    s_id = s_id[:-2]
+                    
+                if not s_id or s_id == '學號' or s_id == 'None':
+                    continue
+
+                raw_name = df.iloc[r_idx, col_idx_map['name']]
+                s_name = str(raw_name).strip() if pd.notna(raw_name) else "未知姓名"
+
+                is_paid = False
+                if 'paid' in col_idx_map:
+                    paid_val = df.iloc[r_idx, col_idx_map['paid']]
+                    if pd.notna(paid_val):
+                        p_str = str(paid_val).strip()
+                        if p_str in ['1', '1.0', '已繳', 'V', 'v']:
+                            is_paid = True
+                
+                if is_paid:
+                    continue
+
+                subtotal = 0
+                if 'subtotal' in col_idx_map:
+                    raw_sub = df.iloc[r_idx, col_idx_map['subtotal']]
+                    try: subtotal = float(raw_sub) if pd.notna(raw_sub) else 0
+                    except: subtotal = 0
+                    
+                if subtotal > 0:
+                    hours = df.iloc[r_idx, col_idx_map['hours']] if 'hours' in col_idx_map else '略'
+                    salary = df.iloc[r_idx, col_idx_map['salary']] if 'salary' in col_idx_map else '略'
+                    book_fee = df.iloc[r_idx, col_idx_map['book_fee']] if 'book_fee' in col_idx_map else None
+                    remark = df.iloc[r_idx, col_idx_map['remark']] if 'remark' in col_idx_map else None
+
+                    if s_id not in student_unpaid_map:
+                        student_unpaid_map[s_id] = {'name': s_name, 'records': []}
+                        
+                    student_unpaid_map[s_id]['records'].append({
+                        'month_str': f"{calc_month}月份",
+                        'hours': hours if pd.notna(hours) else '略',
+                        'salary': salary if pd.notna(salary) else '略',
+                        'subtotal': subtotal,
+                        'book_fee': book_fee,
+                        'remark': remark
+                    })
+    # ==========================================
+    # 程式執行到這裡，離開了 with 區塊，Excel 檔案已經完全釋放並關閉！
+    # ==========================================
 
     if not student_unpaid_map:
       return f'掃描了 {len(processed_sheets)} 個月份的工作表，目前所有學生皆已完成繳費或無欠款。'
