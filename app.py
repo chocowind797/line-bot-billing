@@ -335,71 +335,88 @@ def handle_message(event):
         parts = text.split()
         lookback_months = 6  # 預設回溯 6 個月
         if len(parts) > 1:
-            try:
-                lookback_months = max(1, int(parts[1])) # 確保至少為 1
-            except ValueError:
-                pass
+            try: lookback_months = max(1, int(parts[1]))
+            except ValueError: pass
+
+        # 🎯 自動找出該老師負責的科目
+        target_subjects = []
+        if user_id in ADMIN_USER_IDS:
+            target_subjects = list(SUBJECT_INFO.keys()) # 管理員：全部科目
+        else:
+            for sub_code, sub_info in SUBJECT_INFO.items():
+                if user_id in sub_info['teachers']:
+                    target_subjects.append(sub_code) # 老師：負責的科目
+
+        if not target_subjects:
+            line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='⚠️ 您目前沒有被分配到任何科目，無法發送帳單。')]))
+            return
+
+        subject_names = [SUBJECT_INFO[c]['name'] for c in target_subjects]
+        subject_names_str = "、".join(subject_names)
 
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=f'⏳ 系統已開始在背景處理並發送帳單（回溯 {lookback_months} 個月），完成後會主動通知您，請稍候...')]
+                messages=[TextMessage(text=f'⏳ 系統已開始為您處理【{subject_names_str}】的帳單（回溯 {lookback_months} 個月），請稍候...')]
             )
         )
 
-        def background_send_task(teacher_id, bindings, lb_months):
+        def background_send_task(teacher_id, bindings, lb_months, subjects):
             with ApiClient(configuration) as bg_api_client:
                 bg_line_bot_api = MessagingApi(bg_api_client)
-                result_msg = send_bills_logic(bg_line_bot_api, bindings, lookback_months=lb_months)
-                bg_line_bot_api.push_message(
-                    push_message_request=PushMessageRequest(
-                        to=teacher_id, 
-                        messages=[TextMessage(text=result_msg)]
+                for sub_code in subjects:
+                    # 依序傳入科目代碼執行發送
+                    result_msg = send_bills_logic(bg_line_bot_api, bindings, subject_code=sub_code, lookback_months=lb_months)
+                    bg_line_bot_api.push_message(
+                        push_message_request=PushMessageRequest(to=teacher_id, messages=[TextMessage(text=result_msg)])
                     )
-                )
 
-        thread = threading.Thread(target=background_send_task, args=(user_id, verified_bindings, lookback_months))
+        thread = threading.Thread(target=background_send_task, args=(user_id, verified_bindings, lookback_months, target_subjects))
         thread.start()
         return
       
       elif text.startswith('單發帳單'):
         parts = text.split()
         if len(parts) < 2:
-            line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text='格式錯誤！請輸入例如：單發帳單 2601 或 單發帳單 2601 3')]
-                )
-            )
+            line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='格式錯誤！請輸入例如：單發帳單 2601')]))
             return
             
         target_id = parts[1].strip()
-        lookback_months = 6  # 預設回溯 6 個月
+        lookback_months = 6
         if len(parts) > 2:
-            try:
-                lookback_months = max(1, int(parts[2]))
-            except ValueError:
-                pass
+            try: lookback_months = max(1, int(parts[2]))
+            except ValueError: pass
+
+        # 🎯 自動找出該老師負責的科目
+        target_subjects = []
+        if user_id in ADMIN_USER_IDS:
+            target_subjects = list(SUBJECT_INFO.keys())
+        else:
+            for sub_code, sub_info in SUBJECT_INFO.items():
+                if user_id in sub_info['teachers']:
+                    target_subjects.append(sub_code)
+
+        if not target_subjects:
+            line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='⚠️ 您目前沒有被分配到任何科目。')]))
+            return
                 
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=f'⏳ 系統已開始在背景處理單發帳單（編號 {target_id}，回溯 {lookback_months} 個月），請稍候...')]
+                messages=[TextMessage(text=f'⏳ 系統已開始為您處理單發帳單（編號 {target_id}），請稍候...')]
             )
         )
 
-        def background_single_task(teacher_id, bindings, t_id, lb_months):
+        def background_single_task(teacher_id, bindings, t_id, lb_months, subjects):
             with ApiClient(configuration) as bg_api_client:
                 bg_line_bot_api = MessagingApi(bg_api_client)
-                result_msg = send_bills_logic(bg_line_bot_api, bindings, target_student_id=t_id, lookback_months=lb_months)
-                bg_line_bot_api.push_message(
-                    push_message_request=PushMessageRequest(
-                        to=teacher_id, 
-                        messages=[TextMessage(text=result_msg)]
+                for sub_code in subjects:
+                    result_msg = send_bills_logic(bg_line_bot_api, bindings, subject_code=sub_code, target_student_id=t_id, lookback_months=lb_months)
+                    bg_line_bot_api.push_message(
+                        push_message_request=PushMessageRequest(to=teacher_id, messages=[TextMessage(text=result_msg)])
                     )
-                )
 
-        thread = threading.Thread(target=background_single_task, args=(user_id, verified_bindings, target_id, lookback_months))
+        thread = threading.Thread(target=background_single_task, args=(user_id, verified_bindings, target_id, lookback_months, target_subjects))
         thread.start()
         return
 
