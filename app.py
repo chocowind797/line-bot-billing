@@ -571,10 +571,16 @@ def handle_message(event):
           )
       return
 
+
     # ==========================
-    # 0. 檢查是否正在進行「修改說明」的第二階段輸入
+    # 老師專屬指令處理
     # ==========================
-    if user_id in PENDING_PAYMENT_EDIT:
+    if user_id in ALL_TEACHER_IDS or user_id in ADMIN_USER_IDS:
+
+      # --------------------------
+      # 檢查是否正在進行「修改說明」的第二階段輸入
+      # --------------------------
+      if user_id in PENDING_PAYMENT_EDIT:
         # 💡 如果老師輸入「取消」或「取消修改」，則終止流程並清除狀態
         if text in ['取消', '取消修改']:
             PENDING_PAYMENT_EDIT.pop(user_id, None)
@@ -613,16 +619,11 @@ def handle_message(event):
                 )
             )
         return
-
-    # ==========================
-    # 1. 老師專屬指令處理
-    # ==========================
-    if user_id in ALL_TEACHER_IDS or user_id in ADMIN_USER_IDS:
       
       # --------------------------
       # 批次發送帳單區塊
       # --------------------------
-      if text.startswith('發送帳單'):
+      elif text.startswith('發送帳單'):
         parts = text.split()
         lookback_months = 6  # 預設回溯 6 個月
         if len(parts) > 1:
@@ -960,7 +961,7 @@ def handle_message(event):
         return
 
     # ==========================
-    # 2. 家長綁定處理 (解析科目編號、稱謂清理並精準推播)
+    # 家長綁定處理 (解析科目編號、稱謂清理並精準推播)
     # ==========================
     # 檢查開頭是否為「我是」，且包含 '-' 和 '--'
     if text.startswith('我是') and '-' in text and '--' in text:
