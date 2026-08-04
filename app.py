@@ -246,6 +246,36 @@ def handle_postback(event):
                 )
             except Exception as e:
                 print(f"通知家長失敗: {e}")
+            
+            # ==========================================
+            # 4. 【新增】通知同學科的其他老師是誰審核的
+            # ==========================================
+            try:
+                # 取得按下同意按鈕的老師 LINE 名稱
+                teacher_profile = line_bot_api.get_profile(teacher_id)
+                teacher_name = teacher_profile.display_name
+            except Exception:
+                teacher_name = "某位老師"
+
+            # 抓取該科目的所有老師名單
+            sub_teachers = SUBJECT_INFO.get(sub_code, {}).get('teachers', [])
+            
+            for t_id in sub_teachers:
+                # 排除掉自己，只通知「其他」老師
+                if t_id != teacher_id:
+                    try:
+                        line_bot_api.push_message(
+                            push_message_request=PushMessageRequest(
+                                to=t_id,
+                                messages=[
+                                    TextMessage(
+                                        text=f'ℹ️ 審核動態更新\n老師「{teacher_name}」已核准了【{sub_name}】學生（{student_info}）的綁定申請！'
+                                    )
+                                ]
+                            )
+                        )
+                    except Exception as e:
+                        print(f"通知其他老師 {t_id} 失敗: {e}")
 
         elif action == 'reject':
             # 1. 回覆老師
