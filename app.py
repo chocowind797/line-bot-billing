@@ -21,9 +21,17 @@ from linebot.v3.messaging import (
 )
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, FileMessageContent
 import pandas as pd
-
-# 載入本機的 .env 檔案
-load_dotenv()
+# 從 config.py 統一匯入所有環境變數與設定
+from config import (
+    LINE_CHANNEL_ACCESS_TOKEN,
+    LINE_CHANNEL_SECRET,
+    ADMIN_USER_IDS,
+    SUBJECT_INFO,
+    ALL_TEACHER_IDS,
+    DATA_FOLDER,
+    DATA_FILE_PATH,
+    reload_config  # 新增這一行
+)
 
 app = Flask(__name__)
 
@@ -31,19 +39,9 @@ app = Flask(__name__)
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-# 從環境變數讀取 LINE 金鑰、老師 ID 以及圖文選單 ID
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', '')
-LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', '')
-teacher_ids_raw = os.getenv('TEACHER_USER_IDS', '')
-TEACHER_USER_IDS = [uid.strip() for uid in teacher_ids_raw.split(',') if uid.strip()]
-
 # v3 的 API 與 Handler 初始化方式
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-
-# 資料儲存檔案路徑
-DATA_FILE_PATH = 'bindings.json'
-DATA_FOLDER = 'data'
 
 
 def get_current_month_excel_path():
