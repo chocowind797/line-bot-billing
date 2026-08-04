@@ -785,6 +785,12 @@ def send_bills_logic(line_bot_api, verified_bindings, subject_code, target_stude
   folder_path = sub_info['folder']
   subject_name = sub_info['name']
   
+  # 🎯 讀取該科目專屬的付款資訊（如果沒填則給予預設文字）
+  custom_payment_info = sub_info.get(
+    'payment_info', 
+    '可使用轉帳匯款，完成後再請您通知我一下，謝謝您！'
+  )
+  
   excel_file_path = get_current_month_excel_path(folder_path)
 
   if not os.path.exists(excel_file_path):
@@ -984,12 +990,7 @@ def send_bills_logic(line_bot_api, verified_bindings, subject_code, target_stude
         )
 
         message_content += (f'\n--------------------\n'
-                            f'可使用LINE PAY轉帳或是匯款至\n'
-                            f'玉山銀行代碼(808)帳號0299--979--299866\n'
-                            f'如果是匯款的話\n'
-                            f'匯款完後再請您通知我一下\n'
-                            f'謝謝您唷，感恩感恩'
-                            )
+                            f'{custom_payment_info}')
 
         line_bot_api.push_message(
             push_message_request=PushMessageRequest(
