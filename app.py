@@ -639,7 +639,7 @@ def handle_postback(event):
                 if len(label_text) > 20:
                     label_text = label_text[:17] + "..."
 
-                p_data = f"action=confirm_remove_t&sub={sub_code}&target={t_id}"
+                p_data = f"action=ask_remove_t&sub={sub_code}&target={t_id}"
                 
                 items.append(
                     QuickReplyItem(
@@ -663,9 +663,54 @@ def handle_postback(event):
                 )
             )
             return
-
         # ==========================================
-        # 處理路線 G-2：確認執行移除該老師，並發送通知
+        # 處理路線 G-2：點擊移除老師後，彈出 Confirm 確認按鈕
+        # ==========================================
+        if action == 'ask_remove_t':
+            sub_code = postback_data.get('sub')
+            target_id = postback_data.get('target')
+
+            if sub_code not in SUBJECT_INFO:
+                line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='⚠️ 找不到該學科。')]))
+                return
+
+            sub_name = SUBJECT_INFO[sub_code]['name']
+
+            # 取得目標老師的名字以顯示在提示中
+            try:
+                profile = line_bot_api.get_profile(target_id)
+                target_name = profile.display_name
+            except Exception:
+                target_name = f"老師 ({target_id[-4:]})"
+
+            # 發送 Confirm 確認樣板
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[
+                        TemplateMessage(
+                            alt_text=f"確認移除老師：{target_name}",
+                            template=ConfirmTemplate(
+                                text=f"⚠️ 您確定要從【{sub_name}】中移除授課老師【{target_name}】嗎？",
+                                actions=[
+                                    PostbackAction(
+                                        label="確定移除",
+                                        data=f"action=confirm_remove_t&sub={sub_code}&target={target_id}",
+                                        display_text=f"確定移除 {target_name}"
+                                    ),
+                                    MessageAction(
+                                        label="取消",
+                                        text="取消移除"
+                                    )
+                                ]
+                            )
+                        )
+                    ]
+                )
+            )
+            return
+        # ==========================================
+        # 處理路線 G-3：確認執行移除該老師，並發送通知
         # ==========================================
         if action == 'confirm_remove_t':
             sub_code = postback_data.get('sub')
@@ -718,7 +763,7 @@ def handle_message(event):
     line_bot_api = MessagingApi(api_client)
 
     if text.startswith('t'):
-        reload_config()
+        print(ADMIN_USER_IDS)
     # ==========================
     # 檢查是否正在進行「修改說明」的第二階段輸入
     # ==========================
@@ -781,6 +826,8 @@ def handle_message(event):
         success, result = create_new_subject_by_key(user_id, subject_key, subject_name)
         if success:
             sub_code = result
+            
+            # 1. 回覆建立成功給新開通的老師（管理老師）
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
@@ -796,6 +843,40 @@ def handle_message(event):
                     ]
                 )
             )
+
+            # 2. 取得建立者的名字（LINE 暱稱）
+            try:
+                profile = line_bot_api.get_profile(user_id)
+                creator_name = profile.display_name
+            except Exception:
+                creator_name = f"老師 ({user_id[-4:]})"
+
+            # 3. 主動發送 Push Message 通知所有系統管理員 (ADMIN_USER_IDS)
+            for admin_id in ADMIN_USER_IDS:
+                # 如果建立者剛好也是管理員本人，可以選擇不重複通知（或照樣通知，這裡我們做個防呆避免自己吵自己，若想全部通知可拿掉 if）
+                if admin_id == user_id:
+                    continue
+                    
+                try:
+                    line_bot_api.push_message(
+                        PushMessageRequest(
+                            to=admin_id,
+                            messages=[
+                                TextMessage(
+                                    text=(
+                                        f'📢 【平台系統通知】\n'
+                                        f'有新學科被成功建立囉！\n\n'
+                                        f'📚 學科名稱：{subject_name}\n'
+                                        f'🆔 學科編號：`{sub_code}`\n'
+                                        f'👨‍🏫 管理老師：{creator_name}'
+                                    )
+                                )
+                            ]
+                        )
+                    )
+                except Exception as e:
+                    print(f"發送新學科建立通知給管理員失敗: {e}")
+
         else:
             line_bot_api.reply_message(
                 ReplyMessageRequest(
@@ -918,7 +999,7 @@ def handle_message(event):
     # 管理員專屬指令
     # ==========================
     if user_id in ADMIN_USER_IDS:
-      if text == '新增學科金鑰':
+      if text == '新增學科':
         key, err_msg = generate_subject_creation_key(user_id, ADMIN_USER_IDS)
         if err_msg:
             line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=err_msg)]))
@@ -1335,7 +1416,7 @@ def handle_message(event):
                     action=PostbackAction(
                         label=sub_name, 
                         data=postback_data, 
-                        display_text=f"為【{sub_name}】產生金鑰"
+                        display_text=f"為【{sub_name}】產生邀請金鑰"
                     )
                 )
             )
@@ -1407,7 +1488,7 @@ def handle_message(event):
                 if len(label_text) > 20:
                     label_text = label_text[:17] + "..."
 
-                postback_data = f"action=confirm_remove_t&sub={sub_code}&target={t_id}"
+                postback_data = f"action=ask_remove_t&sub={sub_code}&target={t_id}"
                 
                 items.append(
                     QuickReplyItem(
