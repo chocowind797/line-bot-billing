@@ -42,7 +42,9 @@ from config import (
     DATA_FOLDER,
     DATA_FILE_PATH,
     reload_config,
-    update_subject_payment_info
+    update_subject_payment_info,
+    generate_invite_key,
+    redeem_invite_key
 )
 
 app = Flask(__name__)
@@ -485,6 +487,39 @@ def handle_postback(event):
                 )
             )
             return
+        
+        # ==========================================
+        # 處理路線 E：管理老師透過按鈕選定學科後產生邀請金鑰
+        # ==========================================
+        if action == 'gen_key':
+            sub_code = postback_data.get('sub')
+            
+            if sub_code not in SUBJECT_INFO:
+                line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text="⚠️ 找不到該科目的設定。")]))
+                return
+                
+            key, err_msg = generate_invite_key(sub_code, teacher_id)
+            if err_msg:
+                line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=err_msg)]))
+            else:
+                sub_name = SUBJECT_INFO[sub_code]['name']
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[
+                            TextMessage(
+                                text=(
+                                    f'🔑 已成功為【{sub_name}】產生單次邀請金鑰：\n\n'
+                                    f'👉 `{key}`\n\n'
+                                    f'請將此金鑰提供給新老師，輸入 `加入老師 {key}` 即可加入！'
+                                )
+                            ),
+                            # 獨立發送只有金鑰的訊息，方便複製
+                            TextMessage(text=key)
+                        ]
+                    )
+                )
+            return
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
@@ -495,6 +530,44 @@ def handle_message(event):
 
   with ApiClient(configuration) as api_client:
     line_bot_api = MessagingApi(api_client)
+
+    # --------------------------
+    # 新老師：輸入金鑰加入科目
+    # --------------------------
+    if text.startswith('加入老師'):
+      parts = text.split()
+      if len(parts) < 2:
+          line_bot_api.reply_message(
+              ReplyMessageRequest(
+                  reply_token=event.reply_token,
+                  messages=[TextMessage(text='格式錯誤！請輸入：加入老師 您的金鑰\n例如：加入老師 A3F9B2')]
+              )
+          )
+          return
+
+      invite_key = parts[1].strip().upper()
+      success, result_msg = redeem_invite_key(user_id, invite_key)
+      
+      if success:
+          sub_name = result_msg
+          line_bot_api.reply_message(
+              ReplyMessageRequest(
+                  reply_token=event.reply_token,
+                  messages=[
+                      TextMessage(
+                          text=f'🎉 恭喜您！成功加入【{sub_name}】成為授課老師。\n現在您可以開始使用發送帳單與管理功能了！'
+                      )
+                  ]
+              )
+          )
+      else:
+          line_bot_api.reply_message(
+              ReplyMessageRequest(
+                  reply_token=event.reply_token,
+                  messages=[TextMessage(text=result_msg)]
+              )
+          )
+      return
 
     # ==========================
     # 0. 檢查是否正在進行「修改說明」的第二階段輸入
@@ -794,6 +867,83 @@ def handle_message(event):
                 messages=[
                     TextMessage(
                         text="📋 請選擇您想要修改哪個科目的繳費說明：",
+                        quick_reply=QuickReply(items=items)
+                    )
+                ]
+            )
+        )
+        return
+
+      # --------------------------
+      # 管理老師：生成邀請金鑰 (支援多學科按鈕選擇)
+      # --------------------------
+      elif text == '新增老師':
+        parts = text.split()
+        
+        # 如果只輸入「新增老師」，則找出這位老師是哪幾科的「管理老師 (admin_teacher)」
+        managed_subjects = []
+        # 從 SUBJECT_INFO 或 subjects.json 中檢查該使用者是否為 admin_teacher
+        for sub_code, sub_info in SUBJECT_INFO.items():
+            if sub_info.get('admin_teacher') == user_id or user_id in ADMIN_USER_IDS:
+                managed_subjects.append(sub_code)
+
+        if not managed_subjects:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='⚠️ 您目前沒有被指定為任何學科的管理老師，無法產生邀請金鑰。')]
+                )
+            )
+            return
+
+        # 如果剛好只管理 1 科，直接幫他產生金鑰
+        if len(managed_subjects) == 1:
+            sub_code = managed_subjects[0]
+            key, err_msg = generate_invite_key(sub_code, user_id)
+            if err_msg:
+                line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=err_msg)]))
+            else:
+                sub_name = SUBJECT_INFO[sub_code]['name']
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[
+                            TextMessage(
+                                text=(
+                                    f'🔑 已成功為【{sub_name}】產生單次邀請金鑰：\n\n'
+                                    f'👉 `{key}`\n\n'
+                                    f'請將此金鑰提供給新老師，輸入 `加入老師 {key}` 即可加入！'
+                                )
+                            ),
+                            # 獨立發送只有金鑰的訊息，方便複製
+                            TextMessage(text=key)
+                        ]
+                    )
+                )
+            return
+
+        # 如果有多個管理的學科，跳出選擇按鈕 (Quick Reply)
+        items = []
+        for sub_code in managed_subjects:
+            sub_name = SUBJECT_INFO[sub_code]['name']
+            postback_data = f"action=gen_key&sub={sub_code}"
+            
+            items.append(
+                QuickReplyItem(
+                    action=PostbackAction(
+                        label=sub_name, 
+                        data=postback_data, 
+                        display_text=f"為【{sub_name}】產生金鑰"
+                    )
+                )
+            )
+
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text="📋 請選擇您要為哪一個學科產生新老師邀請金鑰：",
                         quick_reply=QuickReply(items=items)
                     )
                 ]
