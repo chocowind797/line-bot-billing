@@ -753,11 +753,11 @@ def handle_message(event):
 
         sub_key = parts[1].strip().upper()
         
-        # 驗證金鑰是否存在於 subjects.json 的 _subject_creation_keys 中
-        if os.path.exists(SUBJECTS_FILE):
-            with open(SUBJECTS_FILE, 'r', encoding='utf-8') as f:
-                raw_data = json.load(f)
-            creation_keys = raw_data.get("_subject_creation_keys", {})
+        # 驗證金鑰是否存在於 keys.json 的 _subject_creation_keys 中
+        if os.path.exists(KEYS_FILE):
+            with open(KEYS_FILE, 'r', encoding='utf-8') as f:
+                keys_data = json.load(f)
+            creation_keys = keys_data.get("_subject_creation_keys", {})
             if sub_key not in creation_keys:
                 line_bot_api.reply_message(
                     ReplyMessageRequest(
