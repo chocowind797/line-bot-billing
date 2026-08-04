@@ -41,10 +41,13 @@ from config import (
     ALL_TEACHER_IDS,
     DATA_FOLDER,
     DATA_FILE_PATH,
+    SUBJECTS_FILE,
     reload_config,
     update_subject_payment_info,
     generate_invite_key,
-    redeem_invite_key
+    redeem_invite_key,
+    generate_subject_creation_key,
+    create_new_subject_by_key
 )
 
 app = Flask(__name__)
@@ -59,6 +62,8 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 # 用來記錄正在修改說明的老師狀態 {teacher_id: sub_code}
 PENDING_PAYMENT_EDIT = {}
+# 記錄正在等待輸入新學科名稱的使用者 {user_id: subject_key}
+PENDING_SUBJECT_CREATION = {}
 
 def get_current_month_excel_path(folder_path):
   # 【初始化檢查】確保該科目的專屬資料夾存在，如果不存在就自動建立一個
@@ -515,7 +520,7 @@ def handle_postback(event):
                                 )
                             ),
                             # 獨立發送只有金鑰的訊息，方便複製
-                            TextMessage(text=key)
+                            TextMessage(text=f'加入老師 {key}')
                         ]
                     )
                 )
@@ -533,6 +538,91 @@ def handle_message(event):
 
     if text.startswith('t'):
         reload_config()
+    # ==========================
+    # 檢查是否正在進行「修改說明」的第二階段輸入
+    # ==========================
+    if user_id in PENDING_PAYMENT_EDIT:
+        # 💡 如果老師輸入「取消」或「取消修改」，則終止流程並清除狀態
+        if text in ['取消', '取消修改']:
+            PENDING_PAYMENT_EDIT.pop(user_id, None)
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='❌ 已取消本次的修改說明操作。')]
+                )
+            )
+            return
+        sub_code = PENDING_PAYMENT_EDIT.pop(user_id) # 取出後清除狀態，避免卡住
+        subject_name = SUBJECT_INFO.get(sub_code, {}).get('name', '該科目')
+        
+        # 執行寫入（帶入權限檢查）
+        success, err_msg = update_subject_payment_info(sub_code, text, user_id)
+        if success:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[
+                        TextMessage(
+                            text=(
+                                f'✅ 成功更新【{subject_name}】的繳費說明！\n\n'
+                                f'【目前最新的說明內容】\n{text}'
+                            )
+                        )
+                    ]
+                )
+            )
+        else:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='❌ 寫入設定檔失敗，請稍後再試。')]
+                )
+            )
+        return
+    # ==========================
+    # 檢查是否正在進行「建立新學科」的第二階段（輸入學科名稱）
+    # ==========================
+    if user_id in PENDING_SUBJECT_CREATION:
+        if text in ['取消', '取消建立']:
+            PENDING_SUBJECT_CREATION.pop(user_id, None)
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='❌ 已取消建立新學科操作。')]
+                )
+            )
+            return
+
+        subject_key = PENDING_SUBJECT_CREATION.pop(user_id)
+        subject_name = text.strip()
+
+        # 執行建立新學科與計算唯一代碼
+        success, result = create_new_subject_by_key(user_id, subject_key, subject_name)
+        if success:
+            sub_code = result
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[
+                        TextMessage(
+                            text=(
+                                f'🎉 恭喜您！成功建立新學科【{subject_name}】！\n\n'
+                                f'📌 系統自動生成的專屬學科編號為：`{sub_code}`\n'
+                                f'👨‍💼 您已被設為此學科的【管理老師】。\n\n'
+                                f'現在您可以開始使用「新增老師」來產生邀請金鑰，或發送此科目的帳單囉！'
+                            )
+                        )
+                    ]
+                )
+            )
+        else:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=result)]
+                )
+            )
+        return
     # --------------------------
     # 新老師：輸入金鑰加入科目
     # --------------------------
@@ -570,60 +660,82 @@ def handle_message(event):
               )
           )
       return
-
-
-    # ==========================
-    # 老師專屬指令處理
-    # ==========================
-    if user_id in ALL_TEACHER_IDS or user_id in ADMIN_USER_IDS:
-
-      # --------------------------
-      # 檢查是否正在進行「修改說明」的第二階段輸入
-      # --------------------------
-      if user_id in PENDING_PAYMENT_EDIT:
-        # 💡 如果老師輸入「取消」或「取消修改」，則終止流程並清除狀態
-        if text in ['取消', '取消修改']:
-            PENDING_PAYMENT_EDIT.pop(user_id, None)
+    # --------------------------
+    # 其他人：使用金鑰準備開通新學科
+    # --------------------------
+    elif text.startswith('開通學科'):
+        parts = text.split()
+        if len(parts) < 2:
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text='❌ 已取消本次的修改說明操作。')]
+                    messages=[TextMessage(text='格式錯誤！請輸入：開通學科 您的金鑰\n例如：開通學科 C4F2A1')]
                 )
             )
             return
+
+        sub_key = parts[1].strip().upper()
         
-        sub_code = PENDING_PAYMENT_EDIT.pop(user_id) # 取出後清除狀態，避免卡住
-        subject_name = SUBJECT_INFO.get(sub_code, {}).get('name', '該科目')
+        # 驗證金鑰是否存在於 subjects.json 的 _subject_creation_keys 中
+        if os.path.exists(SUBJECTS_FILE):
+            with open(SUBJECTS_FILE, 'r', encoding='utf-8') as f:
+                raw_data = json.load(f)
+            creation_keys = raw_data.get("_subject_creation_keys", {})
+            if sub_key not in creation_keys:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text='⚠️ 無效的新學科金鑰或已被使用。')]
+                    )
+                )
+                return
+
+        # 記錄狀態：這位使用者準備輸入學科名稱
+        PENDING_SUBJECT_CREATION[user_id] = sub_key
         
-        # 執行寫入（帶入權限檢查）
-        success, err_msg = update_subject_payment_info(sub_code, text, user_id)
-        if success:
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text='✅ 金鑰驗證成功！\n\n請在聊天室輸入您想要建立的【學科名稱】（例如：物理、程式設計、英文）：\n（若想放棄，請輸入「取消」）'
+                    )
+                ]
+            )
+        )
+        return
+
+    # ==========================
+    # 管理員專屬指令
+    # ==========================
+    if user_id in ADMIN_USER_IDS:
+      if text == '新增學科金鑰':
+        key, err_msg = generate_subject_creation_key(user_id, ADMIN_USER_IDS)
+        if err_msg:
+            line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=err_msg)]))
+        else:
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
                     messages=[
                         TextMessage(
-                            text=(
-                                f'✅ 成功更新【{subject_name}】的繳費說明！\n\n'
-                                f'【目前最新的說明內容】\n{text}'
-                            )
-                        )
+                            text='🔑 已成功產生【新學科開通信鑰】：\n請將下方金鑰提供給新學科負責人，對方輸入 `開通學科 金鑰` 即可開始建立！'
+                        ),
+                        TextMessage(text=f'開通學科 {key}')
                     ]
                 )
             )
-        else:
-            line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text='❌ 寫入設定檔失敗，請稍後再試。')]
-                )
-            )
         return
-      
+
+    # ==========================
+    # 老師專屬指令處理
+    # ==========================
+    if user_id in ALL_TEACHER_IDS or user_id in ADMIN_USER_IDS:
+         
       # --------------------------
       # 批次發送帳單區塊
       # --------------------------
-      elif text.startswith('發送帳單'):
+      if text.startswith('發送帳單'):
         parts = text.split()
         lookback_months = 6  # 預設回溯 6 個月
         if len(parts) > 1:
@@ -925,7 +1037,7 @@ def handle_message(event):
                                 )
                             ),
                             # 獨立發送只有金鑰的訊息，方便複製
-                            TextMessage(text=key)
+                            TextMessage(text=f'加入老師 {key}')
                         ]
                     )
                 )
