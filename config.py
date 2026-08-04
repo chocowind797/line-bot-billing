@@ -46,13 +46,17 @@ def reload_config():
     if os.path.exists(SUBJECTS_FILE):
         with open(SUBJECTS_FILE, 'r', encoding='utf-8') as f:
             try:
-                loaded_data = json.load(f)
-                SUBJECT_INFO.update(loaded_data)
-                
-                # 自動收集所有科目的老師 ID 到 ALL_TEACHER_IDS 中
-                for sub_code, sub_data in SUBJECT_INFO.items():
-                    teachers = sub_data.get("teachers", [])
-                    ALL_TEACHER_IDS.update(teachers)
+                raw_subjects = json.load(f)
+                for sub_code, sub_data in raw_subjects.items():
+                    # 組合出程式需要的 SUBJECT_INFO 格式，並自動連結對應的資料夾
+                    SUBJECT_INFO[sub_code] = {
+                        "name": sub_data.get("name", "未知科目"),
+                        "teachers": sub_data.get("teacher_ids", []),
+                        "folder": os.path.join(DATA_FOLDER, sub_data.get("folder", str(sub_code))),
+                        "payment_info": sub_data.get("payment_info", "") # 順便帶入自訂付款資訊
+                    }
+                    # 將該科目的所有老師 ID 統整加入全域集合中，方便權限驗證
+                    ALL_TEACHER_IDS.update(sub_data.get("teacher_ids", []))
             except json.JSONDecodeError:
                 print(f"⚠️ {SUBJECTS_FILE} 格式錯誤，請檢查 JSON 語法！")
     else:
