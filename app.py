@@ -5,6 +5,7 @@ import logging
 import threading
 import time
 import os
+from urllib.parse import parse_qsl  # 用來解析按鈕傳回來的隱藏資料
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from flask import Flask, abort, request
@@ -18,8 +19,16 @@ from linebot.v3.messaging import (
     PushMessageRequest,
     ReplyMessageRequest,
     TextMessage,
+    TemplateMessage,   
+    ButtonsTemplate,   
+    PostbackAction     
 )
-from linebot.v3.webhooks import MessageEvent, TextMessageContent, FileMessageContent
+from linebot.v3.webhooks import (
+    MessageEvent, 
+    TextMessageContent, 
+    FileMessageContent,
+    PostbackEvent,
+)
 import pandas as pd
 # 從 config.py 統一匯入所有環境變數與設定
 from config import (
@@ -115,7 +124,7 @@ def handle_file_message(event):
         line_bot_api = MessagingApi(api_client)
 
         # 1. 安全機制：確認傳送檔案的人是不是老師
-        if user_id not in TEACHER_USER_IDS:
+        if user_id not in ALL_TEACHER_IDS:
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
@@ -175,6 +184,87 @@ def handle_file_message(event):
                 )
             )
 
+@handler.add(PostbackEvent)
+def handle_postback(event):
+    # 點擊按鈕的老師 ID
+    teacher_id = event.source.user_id 
+    
+    # 解析按鈕帶過來的隱藏資料
+    postback_data = dict(parse_qsl(event.postback.data))
+    action = postback_data.get('action')
+    parent_uid = postback_data.get('uid')
+    bound_string = postback_data.get('data')
+
+    if not action or not parent_uid or not bound_string:
+        return
+
+    with ApiClient(configuration) as api_client:
+        line_bot_api = MessagingApi(api_client)
+
+        # 安全防護：確保按按鈕的人真的是系統裡的老師
+        if teacher_id not in ALL_TEACHER_IDS:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='您沒有審核權限。')]
+                )
+            )
+            return
+
+        if action == 'approve':
+            # 1. 將資料正式寫入 JSON
+            verified_bindings = load_data()
+            if parent_uid not in verified_bindings:
+                verified_bindings[parent_uid] = []
+            
+            if bound_string not in verified_bindings[parent_uid]:
+                verified_bindings[parent_uid].append(bound_string)
+                save_data(verified_bindings)
+
+            # 2. 回覆老師
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f'✅ 已同意綁定：\n{bound_string}')]
+                )
+            )
+
+            # 3. 通知家長
+            try:
+                # 嘗試反向解析出科目名稱，讓家長看得懂
+                sub_code = bound_string.split('-')[0]
+                sub_name = SUBJECT_INFO.get(sub_code, {}).get('name', '該')
+                student_info = bound_string.split('-', 1)[1] # 取得 2601--小明
+                
+                line_bot_api.push_message(
+                    push_message_request=PushMessageRequest(
+                        to=parent_uid,
+                        messages=[TextMessage(text=f'🎉 您的綁定申請已通過！\n成功綁定【{sub_name}】課程（{student_info}），未來將會在此收到帳單。')]
+                    )
+                )
+            except Exception as e:
+                print(f"通知家長失敗: {e}")
+
+        elif action == 'reject':
+            # 1. 回覆老師
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f'❌ 已拒絕綁定：\n{bound_string}')]
+                )
+            )
+
+            # 2. 通知家長
+            try:
+                line_bot_api.push_message(
+                    push_message_request=PushMessageRequest(
+                        to=parent_uid,
+                        messages=[TextMessage(text=f'⚠️ 您的綁定申請已被老師拒絕。\n資料：{bound_string}\n如有疑問請聯繫您的指導老師。')]
+                    )
+                )
+            except Exception as e:
+                pass
+
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
   user_id = event.source.user_id
@@ -188,7 +278,7 @@ def handle_message(event):
     # ==========================
     # 1. 老師專屬指令處理
     # ==========================
-    if user_id in TEACHER_USER_IDS:
+    if user_id in ALL_TEACHER_IDS:
       if text.startswith('發送帳單'):
         # 拆解指令與數字
         parts = text.split()
@@ -305,54 +395,54 @@ def handle_message(event):
         subject_name = subject_data['name']
         target_teachers = subject_data['teachers']
 
-        # 6. 將綁定資料寫入 bindings.json
-        if user_id not in verified_bindings:
-          verified_bindings[user_id] = []
-
-        if bound_string not in verified_bindings[user_id]:
-          verified_bindings[user_id].append(bound_string)
-          save_data(verified_bindings)
-
-        # 7. 回覆家長成功訊息
+        # 6. 回覆家長等待訊息
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
                 messages=[
                     TextMessage(
                         text=(
-                            f'綁定成功！🎉\n'
-                            f'已將您的帳號綁定至【{subject_name}】課程：\n'
+                            f'⏳ 已收到綁定請求！\n'
+                            f'申請綁定【{subject_name}】課程：\n'
                             f'學號：【{student_id}】\n'
                             f'姓名：【{student_name}】\n'
-                            f'未來將可接收該學生的繳費通知。'
+                            f'已通知該科老師，請等候老師點擊確認。'
                         )
                     )
                 ],
             )
         )
 
-        # 8. 【精準推播】只把通知傳給該科目的老師！
+        # 7. 【精準推播】組合審核按鈕，傳給該科目的老師
         try:
           profile = line_bot_api.get_profile(user_id)
           parent_name = profile.display_name
         except Exception:
           parent_name = '家長'
 
+        # 將資訊壓縮在按鈕的 data 裡 (LINE 限制 data 長度為 300 字元內)
+        approve_data = f"action=approve&uid={user_id}&data={bound_string}"
+        reject_data = f"action=reject&uid={user_id}&data={bound_string}"
+
+        buttons_template = ButtonsTemplate(
+            text=f"🔔 綁定審核\n家長「{parent_name}」申請綁定：\n【{subject_name}】{student_id} {student_name}",
+            actions=[
+                PostbackAction(label="✅ 同意綁定", data=approve_data),
+                PostbackAction(label="❌ 拒絕", data=reject_data)
+            ]
+        )
+        
+        template_message = TemplateMessage(
+            alt_text="收到新的綁定審核請求",
+            template=buttons_template
+        )
+
         for teacher_id in target_teachers:
           try:
             line_bot_api.push_message(
                 push_message_request=PushMessageRequest(
                     to=teacher_id,
-                    messages=[
-                        TextMessage(
-                            text=(
-                                f'【新增綁定通知】🔔\n'
-                                f'家長「{parent_name}」已成功綁定【{subject_name}】學生：\n'
-                                f'學號：【{student_id}】\n'
-                                f'姓名：【{student_name}】'
-                            )
-                        )
-                    ]
+                    messages=[template_message]
                 )
             )
           except Exception as e:
