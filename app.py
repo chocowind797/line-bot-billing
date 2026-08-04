@@ -302,111 +302,161 @@ def handle_postback(event):
         # ==========================================
         # 處理路線 B：家長綁定審核 (同意 / 拒絕)
         # ==========================================
-        parent_uid = postback_data.get('uid')
-        bound_string = postback_data.get('data')
+        if action in ['approve', 'reject']:
+            parent_uid = postback_data.get('uid')
+            bound_string = postback_data.get('data')
 
-        if not parent_uid or not bound_string:
-            return
+            if not parent_uid or not bound_string:
+                return
 
-        # 安全防護：確保按按鈕的人真的是系統裡的老師
-        if teacher_id not in ALL_TEACHER_IDS:
-            line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text='您沒有審核權限。')]
+            # 安全防護：確保按按鈕的人真的是系統裡的老師
+            if teacher_id not in ALL_TEACHER_IDS:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text='您沒有審核權限。')]
+                    )
                 )
-            )
-            return
+                return
 
-        if action == 'approve':
-            # 1. 拆解出「科目代碼」與「學生學號--姓名」
-            sub_code, student_info = bound_string.split('-', 1)
+            if action == 'approve':
+                # 1. 拆解出「科目代碼」與「學生學號--姓名」
+                sub_code, student_info = bound_string.split('-', 1)
 
-            # 2. 將資料正式寫入 JSON (採用巢狀字典結構)
-            verified_bindings = load_data()
-            
-            # (1) 確保該家長擁有專屬的字典
-            if parent_uid not in verified_bindings:
-                verified_bindings[parent_uid] = {}
-            
-            # (2) 確保該家長底下的該科目擁有陣列
-            if sub_code not in verified_bindings[parent_uid]:
-                verified_bindings[parent_uid][sub_code] = []
-            
-            # (3) 檢查不重複後，寫入乾淨的「學號--姓名」
-            if student_info not in verified_bindings[parent_uid][sub_code]:
-                verified_bindings[parent_uid][sub_code].append(student_info)
-                save_data(verified_bindings)
-
-            # 2. 回覆老師 (為了讓老師看懂，還是顯示完整的 bound_string)
-            line_bot_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text=f'✅ 已同意綁定：\n{bound_string}')]
-                )
-            )
-
-            # 3. 通知家長
-            try:
-                # 嘗試反向解析出科目名稱，讓家長看得懂
-                sub_name = SUBJECT_INFO.get(sub_code, {}).get('name', '該')
+                # 2. 將資料正式寫入 JSON (採用巢狀字典結構)
+                verified_bindings = load_data()
                 
-                line_bot_api.push_message(
-                    push_message_request=PushMessageRequest(
-                        to=parent_uid,
-                        messages=[TextMessage(text=f'🎉 您的綁定申請已通過！\n成功綁定【{sub_name}】課程（{student_info}），未來將會在此收到帳單。')]
+                # (1) 確保該家長擁有專屬的字典
+                if parent_uid not in verified_bindings:
+                    verified_bindings[parent_uid] = {}
+                
+                # (2) 確保該家長底下的該科目擁有陣列
+                if sub_code not in verified_bindings[parent_uid]:
+                    verified_bindings[parent_uid][sub_code] = []
+                
+                # (3) 檢查不重複後，寫入乾淨的「學號--姓名」
+                if student_info not in verified_bindings[parent_uid][sub_code]:
+                    verified_bindings[parent_uid][sub_code].append(student_info)
+                    save_data(verified_bindings)
+
+                # 2. 回覆老師 (為了讓老師看懂，還是顯示完整的 bound_string)
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=f'✅ 已同意綁定：\n{bound_string}')]
                     )
                 )
-            except Exception as e:
-                print(f"通知家長失敗: {e}")
-            
-            # 4. 通知同學科的其他老師是誰審核的
-            try:
-                # 取得按下同意按鈕的老師 LINE 名稱
-                teacher_profile = line_bot_api.get_profile(teacher_id)
-                teacher_name = teacher_profile.display_name
-            except Exception:
-                teacher_name = "某位老師"
 
-            # 抓取該科目的所有老師名單
-            sub_teachers = SUBJECT_INFO.get(sub_code, {}).get('teachers', [])
-            
-            for t_id in sub_teachers:
-                # 排除掉自己，只通知「其他」老師
-                if t_id != teacher_id:
-                    try:
-                        line_bot_api.push_message(
-                            push_message_request=PushMessageRequest(
-                                to=t_id,
-                                messages=[
-                                    TextMessage(
-                                        text=f'ℹ️ 審核動態更新\n老師「{teacher_name}」已核准了【{sub_name}】學生（{student_info}）的綁定申請！'
-                                    )
-                                ]
-                            )
+                # 3. 通知家長
+                try:
+                    # 嘗試反向解析出科目名稱，讓家長看得懂
+                    sub_name = SUBJECT_INFO.get(sub_code, {}).get('name', '該')
+                    
+                    line_bot_api.push_message(
+                        push_message_request=PushMessageRequest(
+                            to=parent_uid,
+                            messages=[TextMessage(text=f'🎉 您的綁定申請已通過！\n成功綁定【{sub_name}】課程（{student_info}），未來將會在此收到帳單。')]
                         )
-                    except Exception as e:
-                        print(f"通知其他老師 {t_id} 失敗: {e}")
+                    )
+                except Exception as e:
+                    print(f"通知家長失敗: {e}")
+                
+                # 4. 通知同學科的其他老師是誰審核的
+                try:
+                    # 取得按下同意按鈕的老師 LINE 名稱
+                    teacher_profile = line_bot_api.get_profile(teacher_id)
+                    teacher_name = teacher_profile.display_name
+                except Exception:
+                    teacher_name = "某位老師"
 
-        elif action == 'reject':
-            # 1. 回覆老師
+                # 抓取該科目的所有老師名單
+                sub_teachers = SUBJECT_INFO.get(sub_code, {}).get('teachers', [])
+                
+                for t_id in sub_teachers:
+                    # 排除掉自己，只通知「其他」老師
+                    if t_id != teacher_id:
+                        try:
+                            line_bot_api.push_message(
+                                push_message_request=PushMessageRequest(
+                                    to=t_id,
+                                    messages=[
+                                        TextMessage(
+                                            text=f'ℹ️ 審核動態更新\n老師「{teacher_name}」已核准了【{sub_name}】學生（{student_info}）的綁定申請！'
+                                        )
+                                    ]
+                                )
+                            )
+                        except Exception as e:
+                            print(f"通知其他老師 {t_id} 失敗: {e}")
+
+            elif action == 'reject':
+                # 1. 回覆老師
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text=f'❌ 已拒絕綁定：\n{bound_string}')]
+                    )
+                )
+
+                # 2. 通知家長
+                try:
+                    line_bot_api.push_message(
+                        push_message_request=PushMessageRequest(
+                            to=parent_uid,
+                            messages=[TextMessage(text=f'⚠️ 您的綁定申請已被老師拒絕。\n資料：{bound_string}\n如有疑問請聯繫您的指導老師。')]
+                        )
+                    )
+                except Exception as e:
+                    pass
+
+        # ==========================================
+        # 處理路線 C：選擇科目後執行帳單發送
+        # ==========================================
+        if action == 'exec_bill':
+            mode = postback_data.get('mode')       # 'batch' 或 'single'
+            sub_code = postback_data.get('sub')    # 科目代碼 或 'all'
+
+            print(f'發送{sub_code}帳單')
+            target_student_id = postback_data.get('sid')
+            if target_student_id == 'none':
+                target_student_id = None
+            lookback_months = int(postback_data.get('lb', 6))
+
+            verified_bindings = load_data()
+
+            # 決定要發送的科目清單
+            subjects_to_send = []
+            if sub_code == 'all':
+                subjects_to_send = list(SUBJECT_INFO.keys())
+            else:
+                subjects_to_send = [sub_code]
+
+            sub_names_str = "、".join([SUBJECT_INFO[c]['name'] for c in subjects_to_send if c in SUBJECT_INFO])
+
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text=f'❌ 已拒絕綁定：\n{bound_string}')]
+                    messages=[TextMessage(text=f'⏳ 收到！正在背景為您處理【{sub_names_str}】的帳單（回溯 {lookback_months} 個月），完成後會主動回報，請稍候...')]
                 )
             )
 
-            # 2. 通知家長
-            try:
-                line_bot_api.push_message(
-                    push_message_request=PushMessageRequest(
-                        to=parent_uid,
-                        messages=[TextMessage(text=f'⚠️ 您的綁定申請已被老師拒絕。\n資料：{bound_string}\n如有疑問請聯繫您的指導老師。')]
-                    )
-                )
-            except Exception as e:
-                pass
+            def background_exec_bill_task(teacher_id, bindings, subjects, s_id, lb_months, batch_mode):
+                with ApiClient(configuration) as bg_api_client:
+                    bg_line_bot_api = MessagingApi(bg_api_client)
+                    for scode in subjects:
+                        # 判斷是單發還是批次發送
+                        if batch_mode == 'single':
+                            result_msg = send_bills_logic(bg_line_bot_api, bindings, subject_code=scode, target_student_id=s_id, lookback_months=lb_months)
+                        else:
+                            result_msg = send_bills_logic(bg_line_bot_api, bindings, subject_code=scode, lookback_months=lb_months)
+                        
+                        bg_line_bot_api.push_message(
+                            push_message_request=PushMessageRequest(to=teacher_id, messages=[TextMessage(text=result_msg)])
+                        )
+
+            thread = threading.Thread(target=background_exec_bill_task, args=(teacher_id, verified_bindings, subjects_to_send, target_student_id, lookback_months, mode))
+            thread.start()
+            return
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
@@ -421,65 +471,19 @@ def handle_message(event):
     # ==========================
     # 1. 老師專屬指令處理
     # ==========================
-    if user_id in ALL_TEACHER_IDS:
+    if user_id in ALL_TEACHER_IDS or user_id in ADMIN_USER_IDS:
+      
+      # --------------------------
+      # 批次發送帳單區塊
+      # --------------------------
       if text.startswith('發送帳單'):
-        # 拆解指令與數字
         parts = text.split()
         lookback_months = 6  # 預設回溯 6 個月
         if len(parts) > 1:
             try: lookback_months = max(1, int(parts[1]))
             except ValueError: pass
 
-        # 🎯 自動找出該老師負責的科目
-        target_subjects = []
-        if user_id in ADMIN_USER_IDS:
-            target_subjects = list(SUBJECT_INFO.keys()) # 管理員：全部科目
-        else:
-            for sub_code, sub_info in SUBJECT_INFO.items():
-                if user_id in sub_info['teachers']:
-                    target_subjects.append(sub_code) # 老師：負責的科目
-
-        if not target_subjects:
-            line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='⚠️ 您目前沒有被分配到任何科目，無法發送帳單。')]))
-            return
-
-        subject_names = [SUBJECT_INFO[c]['name'] for c in target_subjects]
-        subject_names_str = "、".join(subject_names)
-
-        line_bot_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=f'⏳ 系統已開始為您處理【{subject_names_str}】的帳單（回溯 {lookback_months} 個月），請稍候...')]
-            )
-        )
-
-        def background_send_task(teacher_id, bindings, lb_months, subjects):
-            with ApiClient(configuration) as bg_api_client:
-                bg_line_bot_api = MessagingApi(bg_api_client)
-                for sub_code in subjects:
-                    # 依序傳入科目代碼執行發送
-                    result_msg = send_bills_logic(bg_line_bot_api, bindings, subject_code=sub_code, lookback_months=lb_months)
-                    bg_line_bot_api.push_message(
-                        push_message_request=PushMessageRequest(to=teacher_id, messages=[TextMessage(text=result_msg)])
-                    )
-
-        thread = threading.Thread(target=background_send_task, args=(user_id, verified_bindings, lookback_months, target_subjects))
-        thread.start()
-        return
-      
-      elif text.startswith('單發帳單'):
-        parts = text.split()
-        if len(parts) < 2:
-            line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='格式錯誤！請輸入例如：單發帳單 2601')]))
-            return
-            
-        target_id = parts[1].strip()
-        lookback_months = 6
-        if len(parts) > 2:
-            try: lookback_months = max(1, int(parts[2]))
-            except ValueError: pass
-
-        # 🎯 自動找出該老師負責的科目
+        # 自動找出該使用者負責的科目
         target_subjects = []
         if user_id in ADMIN_USER_IDS:
             target_subjects = list(SUBJECT_INFO.keys())
@@ -489,27 +493,179 @@ def handle_message(event):
                     target_subjects.append(sub_code)
 
         if not target_subjects:
-            line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='⚠️ 您目前沒有被分配到任何科目。')]))
+            line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='⚠️ 您目前沒有被分配到任何科目，無法發送帳單。')]))
             return
-                
+
+        # 如果只有一個科目，直接背景發送
+        if len(target_subjects) == 1:
+            sub_code = target_subjects[0]
+            sub_name = SUBJECT_INFO[sub_code]['name']
+            
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f'⏳ 系統已開始為您處理【{sub_name}】的帳單（回溯 {lookback_months} 個月），請稍候...')]
+                )
+            )
+
+            def background_single_subject_task(teacher_id, bindings, s_code, lb_months):
+                with ApiClient(configuration) as bg_api_client:
+                    bg_line_bot_api = MessagingApi(bg_api_client)
+                    result_msg = send_bills_logic(bg_line_bot_api, bindings, subject_code=s_code, lookback_months=lb_months)
+                    bg_line_bot_api.push_message(push_message_request=PushMessageRequest(to=teacher_id, messages=[TextMessage(text=result_msg)]))
+
+            thread = threading.Thread(target=background_single_subject_task, args=(user_id, verified_bindings, sub_code, lookback_months))
+            thread.start()
+            return
+
+        # 如果有多個科目，跳出選擇按鈕 (Quick Reply)
+        items = []
+        for sub_code in target_subjects:
+            sub_name = SUBJECT_INFO[sub_code]['name']
+            postback_data = f"action=exec_bill&mode=batch&sub={sub_code}&sid=none&lb={lookback_months}"
+            
+            items.append(
+                QuickReplyItem(
+                    action=PostbackAction(
+                        label=sub_name, 
+                        data=postback_data, 
+                        display_text=f"發送【{sub_name}】帳單"
+                    )
+                )
+            )
+
+        # 管理員額外提供全部發送選項
+        if user_id in ADMIN_USER_IDS:
+            all_postback_data = f"action=exec_bill&mode=batch&sub=all&sid=none&lb={lookback_months}"
+            items.append(
+                QuickReplyItem(
+                    action=PostbackAction(
+                        label="🌐 全部科目", 
+                        data=all_postback_data, 
+                        display_text="發送所有科目帳單"
+                    )
+                )
+            )
+
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text=f'⏳ 系統已開始為您處理單發帳單（編號 {target_id}），請稍候...')]
+                messages=[
+                    TextMessage(
+                        text="📋 請選擇您要執行【批次發送帳單】的科目：",
+                        quick_reply=QuickReply(items=items)
+                    )
+                ]
             )
         )
+        return
+      
+      # --------------------------
+      # 單發帳單區塊 (已獨立呼叫專屬函式)
+      # --------------------------
+      elif text.startswith('單發帳單'):
+        parts = text.split()
+        if len(parts) < 2:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='格式錯誤！請輸入例如：單發帳單 2601 或 單發帳單 2601 3')]
+                )
+            )
+            return
+            
+        target_id = parts[1].strip()
+        lookback_months = 6  # 預設回溯 6 個月
+        if len(parts) > 2:
+            try:
+                lookback_months = max(1, int(parts[2]))
+            except ValueError:
+                pass
 
-        def background_single_task(teacher_id, bindings, t_id, lb_months, subjects):
-            with ApiClient(configuration) as bg_api_client:
-                bg_line_bot_api = MessagingApi(bg_api_client)
-                for sub_code in subjects:
-                    result_msg = send_bills_logic(bg_line_bot_api, bindings, subject_code=sub_code, target_student_id=t_id, lookback_months=lb_months)
+        # 自動找出該使用者負責的科目權限
+        target_subjects = []
+        if user_id in ADMIN_USER_IDS:
+            target_subjects = list(SUBJECT_INFO.keys())
+        else:
+            for sub_code, sub_info in SUBJECT_INFO.items():
+                if user_id in sub_info['teachers']:
+                    target_subjects.append(sub_code)
+
+        if not target_subjects:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='⚠️ 您目前沒有被分配到任何科目。')]
+                )
+            )
+            return
+
+        # 如果只有一個科目，直接在背景執行單發帳單
+        if len(target_subjects) == 1:
+            sub_code = target_subjects[0]
+            sub_name = SUBJECT_INFO[sub_code]['name']
+            
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f'⏳ 系統已開始為您處理【{sub_name}】的單發帳單（學號：{target_id}，回溯 {lookback_months} 個月），請稍候...')]
+                )
+            )
+
+            def background_single_subject_task(teacher_id, bindings, s_code, t_id, lb_months):
+                with ApiClient(configuration) as bg_api_client:
+                    bg_line_bot_api = MessagingApi(bg_api_client)
+                    # 呼叫共用的發送邏輯，並帶入 target_student_id
+                    result_msg = send_bills_logic(bg_line_bot_api, bindings, subject_code=s_code, target_student_id=t_id, lookback_months=lb_months)
                     bg_line_bot_api.push_message(
                         push_message_request=PushMessageRequest(to=teacher_id, messages=[TextMessage(text=result_msg)])
                     )
 
-        thread = threading.Thread(target=background_single_task, args=(user_id, verified_bindings, target_id, lookback_months, target_subjects))
-        thread.start()
+            thread = threading.Thread(target=background_single_subject_task, args=(user_id, verified_bindings, sub_code, target_id, lookback_months))
+            thread.start()
+            return
+
+        # 如果有多個科目，跳出選擇按鈕 (Quick Reply) 讓老師挑選要從哪一科發送
+        items = []
+        for sub_code in target_subjects:
+            sub_name = SUBJECT_INFO[sub_code]['name']
+            # 模式設定為 single，並把學號與回溯月數包進 data 裡
+            postback_data = f"action=exec_bill&mode=single&sub={sub_code}&sid={target_id}&lb={lookback_months}"
+            
+            items.append(
+                QuickReplyItem(
+                    action=PostbackAction(
+                        label=sub_name, 
+                        data=postback_data, 
+                        display_text=f"單發【{sub_name}】帳單"
+                    )
+                )
+            )
+
+        # 管理員額外提供全部發送的選項（可從所有科目中尋找該學號並發送）
+        if user_id in ADMIN_USER_IDS:
+            all_postback_data = f"action=exec_bill&mode=single&sub=all&sid={target_id}&lb={lookback_months}"
+            items.append(
+                QuickReplyItem(
+                    action=PostbackAction(
+                        label="🌐 全部科目", 
+                        data=all_postback_data, 
+                        display_text="從所有科目尋找並發送此學生帳單"
+                    )
+                )
+            )
+
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text=f"📋 請選擇要從哪個科目發送學號【{target_id}】的帳單：",
+                        quick_reply=QuickReply(items=items)
+                    )
+                ]
+            )
+        )
         return
 
     # ==========================
