@@ -3,5 +3,5 @@ __pycache__/
 *.xlsx
 .env
 .venv
-bindings.json
+*.json
 /data/
