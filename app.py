@@ -1190,7 +1190,7 @@ def handle_message(event):
     if user_id in ALL_TEACHER_IDS or user_id in ADMIN_USER_IDS:
          
       # --------------------------
-      # 批次發送帳單區塊
+      # 批次發送帳單區塊（僅限管理老師與管理員）
       # --------------------------
       if text.startswith('發送帳單'):
         parts = text.split()
@@ -1199,17 +1199,22 @@ def handle_message(event):
             try: lookback_months = max(1, int(parts[1]))
             except ValueError: pass
 
-        # 自動找出該使用者負責的科目
+        # 💡 自動找出該使用者身為「管理老師」或「系統管理員」的科目
         target_subjects = []
-        if user_id in ADMIN_USER_IDS:
-            target_subjects = list(SUBJECT_INFO.keys())
-        else:
-            for sub_code, sub_info in SUBJECT_INFO.items():
-                if user_id in sub_info['teachers']:
-                    target_subjects.append(sub_code)
+        for sub_code, sub_info in SUBJECT_INFO.items():
+            if sub_code.startswith('_'):
+                continue
+            admin_t = sub_info.get('admin_teacher')
+            if user_id in ADMIN_USER_IDS or admin_t == user_id:
+                target_subjects.append(sub_code)
 
         if not target_subjects:
-            line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='⚠️ 您目前沒有被分配到任何科目，無法發送帳單。')]))
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='⚠️ 只有該學科的管理老師或系統管理員才可以發送帳單。')]
+                )
+            )
             return
 
         # 如果只有一個科目，直接背景發送
@@ -1277,7 +1282,7 @@ def handle_message(event):
         return
       
       # --------------------------
-      # 單發帳單區塊 (已獨立呼叫專屬函式)
+      # 單發帳單區塊（僅限管理老師與管理員）
       # --------------------------
       elif text.startswith('單發帳單'):
         parts = text.split()
@@ -1298,20 +1303,20 @@ def handle_message(event):
             except ValueError:
                 pass
 
-        # 自動找出該使用者負責的科目權限
+        # 💡 自動找出該使用者身為「管理老師」或「系統管理員」的科目權限
         target_subjects = []
-        if user_id in ADMIN_USER_IDS:
-            target_subjects = list(SUBJECT_INFO.keys())
-        else:
-            for sub_code, sub_info in SUBJECT_INFO.items():
-                if user_id in sub_info['teachers']:
-                    target_subjects.append(sub_code)
+        for sub_code, sub_info in SUBJECT_INFO.items():
+            if sub_code.startswith('_'):
+                continue
+            admin_t = sub_info.get('admin_teacher')
+            if user_id in ADMIN_USER_IDS or admin_t == user_id:
+                target_subjects.append(sub_code)
 
         if not target_subjects:
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text='⚠️ 您目前沒有被分配到任何科目。')]
+                    messages=[TextMessage(text='⚠️ 只有該學科的管理老師或系統管理員才可以發送帳單。')]
                 )
             )
             return
@@ -1331,7 +1336,6 @@ def handle_message(event):
             def background_single_subject_task(teacher_id, bindings, s_code, t_id, lb_months):
                 with ApiClient(configuration) as bg_api_client:
                     bg_line_bot_api = MessagingApi(bg_api_client)
-                    # 呼叫共用的發送邏輯，並帶入 target_student_id
                     result_msg = send_bills_logic(bg_line_bot_api, bindings, subject_code=s_code, target_student_id=t_id, lookback_months=lb_months)
                     bg_line_bot_api.push_message(
                         push_message_request=PushMessageRequest(to=teacher_id, messages=[TextMessage(text=result_msg)])
@@ -1341,11 +1345,10 @@ def handle_message(event):
             thread.start()
             return
 
-        # 如果有多個科目，跳出選擇按鈕 (Quick Reply) 讓老師挑選要從哪一科發送
+        # 如果有多個科目，跳出選擇按鈕 (Quick Reply)
         items = []
         for sub_code in target_subjects:
             sub_name = SUBJECT_INFO[sub_code]['name']
-            # 模式設定為 single，並把學號與回溯月數包進 data 裡
             postback_data = f"action=exec_bill&mode=single&sub={sub_code}&sid={target_id}&lb={lookback_months}"
             
             items.append(
@@ -1358,7 +1361,7 @@ def handle_message(event):
                 )
             )
 
-        # 管理員額外提供全部發送的選項（可從所有科目中尋找該學號並發送）
+        # 管理員額外提供全部發送的選項
         if user_id in ADMIN_USER_IDS:
             all_postback_data = f"action=exec_bill&mode=single&sub=all&sid={target_id}&lb={lookback_months}"
             items.append(
@@ -1709,6 +1712,74 @@ def handle_message(event):
                     TextMessage(
                         text="📋 請選擇您要管理哪一個學科的老師名單：",
                         quick_reply=QuickReply(items=items)
+                    )
+                ]
+            )
+        )
+        return
+
+      # --------------------------
+      # 說明/幫助功能（依身分動態顯示對應功能與漂浮按鈕）
+      # --------------------------
+      elif text in ['幫助', 'help', '功能', '指令說明', '?']:
+        # 1. 判斷使用者的身分權限
+        is_admin = user_id in ADMIN_USER_IDS
+        
+        # 檢查是否為任何學科的管理老師
+        is_manager = False
+        for sub_code, sub_info in SUBJECT_INFO.items():
+            if sub_info.get('admin_teacher') == user_id:
+                is_manager = True
+                break
+
+        # 2. 基礎功能（所有老師皆有）
+        help_text = (
+            '📚 【老師功能指南】\n\n'
+            '1️⃣ 學生與綁定管理\n'
+            '• 輸入 `產生綁定`：選擇科目後輸入「學號 名字」，快速產生家長綁定通知範本。\n'
+        )
+        
+        quick_reply_items = [
+            QuickReplyItem(action=MessageAction(label="產生學生綁定", text="產生綁定"))
+        ]
+
+        # 3. 若為「管理老師」或「管理員」，加入管理老師功能
+        if is_manager or is_admin:
+            help_text += (
+                '\n2️⃣ 管理老師專屬功能\n'
+                '• 輸入 `發送帳單`：批次發送半年內各學生的學費帳單。\n'
+                '• 輸入 `發送帳單 [月份]`：批次發送指定時間內各學生的學費帳單。\n'
+                '• 輸入 `單發帳單 [學號]`：針對特定學生補發或單獨發送帳單。\n'
+                '• 輸入 `修改說明`：自訂該學科的轉帳/繳費說明文字。\n'
+                '• 輸入 `新增老師`：產生單次使用的老師邀請金鑰。\n'
+                '• 輸入 `移除老師`：安全移除授課老師（附帶確認與通知）。\n'
+            )
+            quick_reply_items.extend([
+                QuickReplyItem(action=MessageAction(label="發送帳單", text="發送帳單")),
+                QuickReplyItem(action=MessageAction(label="新增老師", text="新增老師")),
+                QuickReplyItem(action=MessageAction(label="移除老師", text="移除老師")),
+                QuickReplyItem(action=MessageAction(label="修改說明", text="修改說明")),
+            ])
+
+        # 4. 若為「系統管理員」，再加入管理員功能
+        if is_admin:
+            help_text += (
+                '\n3️⃣ 系統管理員專屬功能\n'
+                '• 輸入 `新增學科`：產生新學科開通信鑰。\n'
+                '• 輸入 `刪除學科`：刪除學科並自動清理對應資料與發送通知。\n'
+            )
+            quick_reply_items.extend([
+                QuickReplyItem(action=MessageAction(label="新增學科", text="新增學科")),
+                QuickReplyItem(action=MessageAction(label="刪除學科", text="刪除學科")),
+            ])
+
+        line_bot_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[
+                    TextMessage(
+                        text=help_text,
+                        quick_reply=QuickReply(items=quick_reply_items)
                     )
                 ]
             )
