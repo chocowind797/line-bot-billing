@@ -216,7 +216,7 @@ def cmd_generate_binding(event, user_id, text, parts):
         line_service.reply_text(event.reply_token, "📋 請選擇您要為哪一個學科產生學生綁定訊息：", quick_reply_items=items)
 
 def cmd_send_bills(event, user_id, text, parts):
-    lookback = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 6
+    lookback = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
     target_subjects = [c for c, i in SUBJECT_INFO.items() if not c.startswith('_') and (user_id in ADMIN_USER_IDS or i.get('admin_teacher') == user_id)]
     
     if not target_subjects:
@@ -227,8 +227,7 @@ def cmd_send_bills(event, user_id, text, parts):
         line_service.reply_text(event.reply_token, f'⏳ 系統已開始處理【{SUBJECT_INFO[sub_code]["name"]}】的帳單...')
         
         def bg_task():
-            bindings = data_service.load_verified_bindings()
-            res = billing_service.send_bills_logic(bindings, sub_code, lookback_months=lookback)
+            res = billing_service.send_bills_logic(sub_code, lookback_months=lookback)
             line_service.push_text(user_id, res)
         threading.Thread(target=bg_task).start()
     else:
@@ -285,7 +284,7 @@ def cmd_send_single_bill(event, user_id, text, parts):
     if len(parts) < 2:
         return line_service.reply_text(event.reply_token, '格式錯誤！請輸入例如：單發帳單 2601 或 單發帳單 2601 3')
     target_id = parts[1].strip()
-    lookback = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 6
+    lookback = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
 
     target_subjects = [c for c, i in SUBJECT_INFO.items() if not c.startswith('_') and (user_id in ADMIN_USER_IDS or i.get('admin_teacher') == user_id)]
     if not target_subjects:
@@ -295,8 +294,7 @@ def cmd_send_single_bill(event, user_id, text, parts):
         sub_code = target_subjects[0]
         line_service.reply_text(event.reply_token, f'⏳ 系統已開始為您處理【{SUBJECT_INFO[sub_code]["name"]}】的單發帳單...')
         def bg_task():
-            bindings = data_service.load_verified_bindings()
-            res = billing_service.send_bills_logic(bindings, sub_code, target_id, lookback)
+            res = billing_service.send_bills_logic(sub_code, target_id, lookback)
             line_service.push_text(user_id, res)
         threading.Thread(target=bg_task).start()
     else:
@@ -420,6 +418,31 @@ def cmd_check_pending(event, user_id, text, parts):
         # LINE 限制一次最多發送 5 張卡片
         line_service.reply_message(reply_token, messages[:5])
 
+def cmd_activating(event, user_id, text, parts):
+    # 1. 取得發送者的姓名與 ID
+    user_name = line_service.get_user_name(user_id)
+    
+    # 2. 回覆使用者正在處理
+    line_service.reply_text(
+        event.reply_token,
+        "📩 您的開通申請已送出！已通知管理員進行審核，請稍候..."
+    )
+    
+    # 3. 組合要發送給管理員的通知訊息
+    admin_message = (
+        f"🔔 【新的開通申請通知】\n\n"
+        f"👤 申請人：{user_name}\n\n"
+        f"請儘速協助該用戶進行開通與權限設定！"
+    )
+    
+    # 4. 迴圈發送給所有管理員 (ADMIN_USER_IDS)
+    for admin_id in ADMIN_USER_IDS:
+        try:
+            line_service.push_text(admin_id, admin_message)
+        except Exception as e:
+            print(f"通知管理員 {admin_id} 失敗: {e}")
+            
+    return
 # ==========================================
 # 4. Router 註冊表 (將文字對應到函式)
 # ==========================================
@@ -433,6 +456,7 @@ COMMAND_ROUTER = {
     '？': cmd_help,
     
     # 一般老師功能
+    '開通':cmd_activating,
     '產生綁定': cmd_generate_binding,
     '查詢審核': cmd_check_pending,
     '加入老師': cmd_join_teacher,
