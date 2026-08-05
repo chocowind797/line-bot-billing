@@ -28,6 +28,13 @@ TEMP_FILE_FORMAT = "temp_{msg_id}.xlsx"
 os.makedirs(DATA_FOLDER, exist_ok=True)
 os.makedirs(CONFIG_FOLDER, exist_ok=True)
 os.makedirs(STAGING_FOLDER, exist_ok=True)
+# 確保檔案存在
+def create_file(*files):
+    for file in files:
+        if not os.path.exists(file):
+            with open(file, 'w', encoding='utf-8') as f:
+                f.write("{}")
+create_file(DATA_FILE_PATH, SUBJECTS_FILE, KEYS_FILE, PENDING_FILE, STATE_FILE)
 
 # ==========================================
 # 宣告全域變數 (先建立空的容器)
