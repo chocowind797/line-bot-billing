@@ -4,4 +4,6 @@ __pycache__/
 .env
 .venv
 *.json
-/data/
+/records/*
+!/records/example/
+!/records/example/example.xlsx
