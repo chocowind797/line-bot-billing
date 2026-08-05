@@ -64,7 +64,8 @@ def reload_config():
                         "admin_teacher": sub_data.get("admin_teacher", ""),
                         "teachers": sub_data.get("teachers", []),
                         "folder": os.path.join(DATA_FOLDER, sub_data.get("folder", str(sub_code))),
-                        "payment_info": sub_data.get("payment_info", "") # 順便帶入自訂付款資訊
+                        "payment_info": sub_data.get("payment_info", ""), # 順便帶入自訂付款資訊
+                        "created_date": sub_data.get("created_date", "未知日期")
                     }
                     # 將該科目的所有老師 ID 統整加入全域集合中，方便權限驗證
                     ALL_TEACHER_IDS.update(sub_data.get("teachers", []))
@@ -305,13 +306,17 @@ def create_new_subject_by_key(user_id, subject_key, subject_name):
     while sub_code in raw_subjects:
         sub_code = hashlib.md5((base_str + sub_code).encode('utf-8')).hexdigest()[:4].lower()
 
+    # 取得當前的年月日（例如：2026-06-07）
+    creation_date = datetime.date.today().strftime('%Y-%m-%d')
+
     # 建立新學科
     raw_subjects[sub_code] = {
         "name": subject_name,
         "folder_name": sub_code,
         "admin_teacher": user_id,
         "teachers": [user_id],
-        "payment_info": "匯款完成後再請您通知我一下，謝謝！"
+        "payment_info": "匯款完成後再請您通知我一下，謝謝！",
+        "created_date": creation_date
     }
 
     # 銷毀用過的新學科金鑰

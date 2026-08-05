@@ -921,6 +921,9 @@ def handle_message(event):
         success, result = create_new_subject_by_key(user_id, subject_key, subject_name)
         if success:
             sub_code = result
+
+            # 💡 取得該學科剛才記錄的開通日期
+            sub_date = SUBJECT_INFO.get(sub_code, {}).get('created_date', '未知日期')
             
             # 1. 回覆建立成功給新開通的老師（管理老師）
             line_bot_api.reply_message(
@@ -931,6 +934,7 @@ def handle_message(event):
                             text=(
                                 f'🎉 恭喜您！成功建立新學科【{subject_name}】！\n\n'
                                 f'📌 系統自動生成的專屬學科編號為：`{sub_code}`\n'
+                                f'📅 開通日期：{sub_date}\n'
                                 f'👨‍💼 您已被設為此學科的【管理老師】。\n\n'
                                 f'現在您可以開始使用「新增老師」來產生邀請金鑰，或發送此科目的帳單囉！'
                             )
