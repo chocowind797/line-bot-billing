@@ -93,7 +93,7 @@ reload_config()
 # ==========================================
 # 老師可以在聊天室內修改payment_info
 # ==========================================
-def update_subject_payment_info(sub_code, new_payment_info, admin_user_ids):
+def update_subject_payment_info(user_id, sub_code, new_payment_info):
     """更新指定科目的 payment_info 並寫回 subjects.json"""
     if os.path.exists(SUBJECTS_FILE):
         try:
@@ -103,17 +103,17 @@ def update_subject_payment_info(sub_code, new_payment_info, admin_user_ids):
             if sub_code in raw_subjects:
                 sub_data = raw_subjects[sub_code]
                 # 權限檢查：必須是系統管理員，或是該科目的指定管理老師
-                if user_id not in admin_user_ids and sub_data.get("admin_teacher") != user_id:
+                if user_id not in ADMIN_USER_IDS and sub_data.get("admin_teacher") != user_id:
                     return False, "⚠️ 您不是該科目的管理老師，無權修改繳費說明。"
                 
                 sub_data["payment_info"] = new_payment_info
                 with open(SUBJECTS_FILE, 'w', encoding='utf-8') as f:
                     json.dump(raw_subjects, f, ensure_ascii=False, indent=4)
                 reload_config()
-                return True
+                return True, None
         except Exception as e:
             print(f"更新 subjects.json 失敗: {e}")
-    return False
+    return False, "subjects.json不存在"
 
 # ==========================================
 # 管理老師可以生成邀請金鑰

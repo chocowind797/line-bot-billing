@@ -48,7 +48,7 @@ def process_pending_states(event, user_id, text, state):
     elif stype == 'PENDING_PAYMENT_EDIT':
         sub_code = data['sub_code']
         subject_name = SUBJECT_INFO.get(sub_code, {}).get('name', '該科目')
-        success, err_msg = update_subject_payment_info(sub_code, text, user_id)
+        success, err_msg = update_subject_payment_info(user_id, sub_code, text)
         
         if success:
             line_service.reply_text(reply_token, f'✅ 成功更新【{subject_name}】的繳費說明！\n\n【目前最新的說明內容】\n{text}')
