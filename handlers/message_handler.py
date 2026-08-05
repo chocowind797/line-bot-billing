@@ -161,10 +161,12 @@ def cmd_help(event, user_id, text, parts):
         '📚 【老師功能指南】\n\n'
         '1️⃣ 學生與綁定管理\n'
         '• 輸入 `產生綁定`：選擇科目後輸入「學號 名字」，快速產生家長綁定通知範本。\n'
+        '• 輸入 `查詢審核`：查看目前所有等待審核中的家長綁定申請。\n'
     )
     
     quick_reply_items = [
-        QuickReplyItem(action=MessageAction(label="產生學生綁定", text="產生綁定"))
+        QuickReplyItem(action=MessageAction(label="產生綁定", text="產生綁定")),
+        QuickReplyItem(action=MessageAction(label="查詢審核", text="查詢審核"))
     ]
 
     # 3. 若為「管理老師」或「管理員」，加入管理老師功能
