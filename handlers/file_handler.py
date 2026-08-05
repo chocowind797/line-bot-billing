@@ -2,7 +2,7 @@ import os
 import datetime
 from linebot.v3.webhooks import MessageEvent
 from linebot.v3.messaging import QuickReplyItem, PostbackAction
-from config import SUBJECT_INFO, ADMIN_USER_IDS, DATA_FOLDER
+from config import SUBJECT_INFO, ADMIN_USER_IDS, STAGING_FOLDER, TEMP_FILE_FORMAT
 from services import line_service
 
 def handle_file_message(event: MessageEvent):
@@ -65,8 +65,14 @@ def handle_file_message(event: MessageEvent):
         # 情境 B：有多個科目，先暫存並跳出按鈕讓老師選
         # ==========================================
         else:
-            # 暫存在最外層的 data 資料夾，並用 message_id 命名避免衝突
-            temp_path = os.path.join(DATA_FOLDER, f"temp_{message_id}.xlsx")
+            # 確保 staging 資料夾存在
+            if not os.path.exists(STAGING_FOLDER):
+                os.makedirs(STAGING_FOLDER)
+
+            # 透過 config 的格式來產生暫存檔路徑
+            file_name = TEMP_FILE_FORMAT.format(msg_id=message_id)
+            temp_path = os.path.join(STAGING_FOLDER, file_name)
+
             with open(temp_path, 'wb') as f:
                 f.write(file_content)
 

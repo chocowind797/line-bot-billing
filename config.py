@@ -10,15 +10,22 @@ import shutil
 # 基礎路徑設定
 # ==========================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_FOLDER = os.path.join(BASE_DIR, 'data')
+DATA_FOLDER = os.path.join(BASE_DIR, 'records')
 CONFIG_FOLDER = os.path.join(BASE_DIR, 'config')
-DATA_FILE_PATH = os.path.join(CONFIG_FOLDER, 'bindings.json')
-SUBJECTS_FILE = os.path.join(CONFIG_FOLDER, 'subjects.json') # 新增：科目設定檔路徑
-KEYS_FILE = os.path.join(CONFIG_FOLDER, 'keys.json') # 新增：金鑰設定檔路徑
+STAGING_FOLDER = os.path.join(BASE_DIR, 'staging')
+DATA_FILE_PATH = os.path.join(CONFIG_FOLDER, 'bindings.json') # 家長綁定檔路徑
+SUBJECTS_FILE = os.path.join(CONFIG_FOLDER, 'subjects.json') # 科目設定檔路徑
+KEYS_FILE = os.path.join(CONFIG_FOLDER, 'keys.json') # 金鑰設定檔路徑
+
+# --------------------------
+# 暫存檔命名格式設定
+# --------------------------
+TEMP_FILE_FORMAT = "temp_{msg_id}.xlsx"
 
 # 確保資料夾存在
 os.makedirs(DATA_FOLDER, exist_ok=True)
-os.makedirs(CONFIG_FOLDER, exist_ok=True) # 💡 新增這行
+os.makedirs(CONFIG_FOLDER, exist_ok=True)
+os.makedirs(STAGING_FOLDER, exist_ok=True)
 
 # ==========================================
 # 宣告全域變數 (先建立空的容器)
