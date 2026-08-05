@@ -18,7 +18,7 @@ SUBJECTS_FILE = os.path.join(CONFIG_FOLDER, 'subjects.json') # 科目設定檔�
 KEYS_FILE = os.path.join(CONFIG_FOLDER, 'keys.json') # 金鑰設定檔路徑
 PENDING_FILE = os.path.join(STAGING_FOLDER, 'pending_bindings.json') # 金鑰設定檔路徑
 STATE_FILE = os.path.join(STAGING_FOLDER, 'temp_states.json')
-EXAMPLE_XLSX = os.path.join(CONFIG_FOLDER, 'example/example.xlsx')
+EXAMPLE_FOLDER = os.path.join(DATA_FOLDER, 'example')
 
 # --------------------------
 # 暫存檔命名格式設定

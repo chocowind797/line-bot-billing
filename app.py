@@ -3,7 +3,7 @@ from flask import Flask, abort, request, send_from_directory
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, FileMessageContent, PostbackEvent
-from config import LINE_CHANNEL_SECRET, EXAMPLE_XLSX
+from config import LINE_CHANNEL_SECRET, EXAMPLE_FOLDER
 
 # 匯入我們寫好的所有 Handlers 模組
 from handlers.message_handler import handle_text_message
@@ -25,7 +25,7 @@ def health_check():
 
 @app.route('/download/example-excel', methods=['GET'])
 def download_example_excel():      
-    return send_from_directory(directory='file', filename=EXAMPLE_XLSX, as_attachment=True)
+    return send_from_directory(EXAMPLE_FOLDER, 'example.xlsx', as_attachment=True)
 
 @app.route('/callback', methods=['POST'])
 def callback():
