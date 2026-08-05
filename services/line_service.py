@@ -1,3 +1,4 @@
+from functools import wraps
 from linebot.v3.messaging import (
     ApiClient, Configuration, MessagingApi, MessagingApiBlob,
     ReplyMessageRequest, PushMessageRequest, TextMessage, QuickReply
@@ -6,12 +7,35 @@ from config import LINE_CHANNEL_ACCESS_TOKEN
 
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 
+def auto_format_messages(func):
+    """裝飾器：自動將傳入的訊息（字串、字典或清單）轉為 LINE SDK 的 TextMessage 物件"""
+    @wraps(func)
+    def wrapper(to_or_token, messages, *args, **kwargs):
+        # 確保 messages 是一個 list
+        if not isinstance(messages, list):
+            messages = [messages]
+            
+        formatted = []
+        for msg in messages:
+            if isinstance(msg, str):
+                formatted.append(TextMessage(text=msg))
+            elif isinstance(msg, dict) and "text" in msg:
+                formatted.append(TextMessage(text=msg["text"]))
+            else:
+                formatted.append(msg)
+                
+        # 呼叫原本的函式，並帶入格式化後的 messages
+        return func(to_or_token, formatted, *args, **kwargs)
+    return wrapper
+
+@auto_format_messages
 def reply_message(reply_token, messages):
     """傳送多則/自訂格式回覆訊息"""
     with ApiClient(configuration) as api_client:
         api = MessagingApi(api_client)
         api.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=messages))
 
+@auto_format_messages
 def push_message(to, messages):
     """傳送多則/自訂格式推播訊息"""
     with ApiClient(configuration) as api_client:

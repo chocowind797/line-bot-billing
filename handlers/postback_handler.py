@@ -6,6 +6,9 @@ from urllib.parse import parse_qsl
 from linebot.v3.webhooks import PostbackEvent
 from config import SUBJECT_INFO, DATA_FOLDER, TEMP_FILE_FORMAT
 from services import line_service, data_service
+from linebot.v3.messaging import (
+    TemplateMessage, ConfirmTemplate, PostbackAction, MessageAction
+)
 
 def handle_postback(event: PostbackEvent):
     """處理所有來自按鈕點擊 (Postback) 的事件"""
@@ -20,7 +23,7 @@ def handle_postback(event: PostbackEvent):
         return
 
     # ==========================================
-    # 1. 處理上傳 Excel 後的科目選擇按鈕
+    # 處理路線 A. 處理上傳 Excel 後的科目選擇按鈕
     # ==========================================
     if action == 'upload_sub':
         msg_id = data.get('msg_id')
@@ -56,7 +59,7 @@ def handle_postback(event: PostbackEvent):
         line_service.reply_text(reply_token, reply_msg)
 
     # ==========================================
-    # 2. 處理老師同意家長綁定
+    # 處理路線 B-1. 處理老師同意家長綁定
     # ==========================================
     elif action == 'approve_bind':
         parent_id = data.get('parent_id')
@@ -103,7 +106,7 @@ def handle_postback(event: PostbackEvent):
             data_service.save_pending_bindings(pending_data)
 
     # ==========================================
-    # 3. 處理老師拒絕家長綁定
+    # 處理路線 B-2. 處理老師拒絕家長綁定
     # ==========================================
     elif action == 'reject_bind':
         parent_id = data.get('parent_id')
@@ -129,12 +132,273 @@ def handle_postback(event: PostbackEvent):
             data_service.save_pending_bindings(pending_data)
 
     # ==========================================
-    # 4. 刪除老師與刪除學科的確認 (預留擴充)
+    # 處理路線 C：選擇科目後執行帳單發送
     # ==========================================
-    elif action == 'confirm_del_teacher':
-        # 這裡未來可以放入您的「刪除老師」確認邏輯
-        pass
+    elif action == 'exec_bill':
+        mode = data.get('mode')       # 'batch' 或 'single'
+        sub_code = data.get('sub')    # 科目代碼 或 'all'
+        target_student_id = data.get('sid')
+        if target_student_id == 'none':
+            target_student_id = None
+        lookback_months = int(data.get('lb', 6))
+
+        subjects_to_send = list(SUBJECT_INFO.keys()) if sub_code == 'all' else [sub_code]
+        sub_names_str = "、".join([SUBJECT_INFO[c]['name'] for c in subjects_to_send if c in SUBJECT_INFO])
+
+        line_service.reply_text(
+            reply_token,
+            f'⏳ 收到！正在背景為您處理【{sub_names_str}】的帳單（回溯 {lookback_months} 個月），完成後會主動回報，請稍候...'
+        )
+        return
+
+    # ==========================================
+    # 處理路線 D：選擇要修改說明的科目
+    # ==========================================
+    elif action == 'select_edit_sub':
+        sub_code = data.get('sub')
+        if sub_code not in SUBJECT_INFO:
+            line_service.reply_text(reply_token, "⚠️ 找不到該科目的設定。")
+            return
+            
+        subject_name = SUBJECT_INFO[sub_code]['name']
+        line_service.reply_text(
+            reply_token,
+            f'📝 您已選擇修改【{subject_name}】的繳費說明。\n\n請直接在聊天室輸入您想要設定的「新繳費說明內容」：'
+        )
+        return
+
+    # ==========================================
+    # 處理路線 E：管理老師透過按鈕選定學科後產生邀請金鑰
+    # ==========================================
+    elif action == 'gen_key':
+        sub_code = data.get('sub')
         
-    elif action == 'confirm_del_subject':
-        # 這裡未來可以放入您的「刪除學科並清理資料夾」確認邏輯
-        pass
+        if sub_code not in SUBJECT_INFO:
+            line_service.reply_text(reply_token, "⚠️ 找不到該科目的設定。")
+            return
+            
+        # 確保您的 config 有引入 generate_invite_key
+        key, err_msg = generate_invite_key(sub_code, user_id)
+        if err_msg:
+            line_service.reply_text(reply_token, err_msg)
+        else:
+            sub_name = SUBJECT_INFO[sub_code]['name']
+            # 利用升級過、支援清單與自動轉換的 line_service 發送兩則訊息
+            line_service.reply_message(
+                reply_token,
+                [
+                    f'🔑 已成功為【{sub_name}】產生單次邀請金鑰：\n\n👉 `{key}`\n\n請將此金鑰提供給新老師，輸入 `加入老師 {key}` 即可加入！',
+                    f'加入老師 {key}'
+                ]
+            )
+        return
+
+    # ==========================================
+    # 處理路線 F-1：管理員點擊刪除後，跳出 Confirm 確認按鈕
+    # ==========================================
+    elif action == 'del_sub':
+        if user_id not in ADMIN_USER_IDS:
+            line_service.reply_text(reply_token, '⚠️ 只有系統管理員可以刪除學科。')
+            return
+
+        sub_code = data.get('sub')
+        if sub_code not in SUBJECT_INFO:
+            line_service.reply_text(reply_token, '⚠️ 找不到該學科。')
+            return
+
+        sub_name = SUBJECT_INFO[sub_code]['name']
+        
+        # 發送 Confirm 確認樣板
+        line_service.reply_message(
+            reply_token,
+            [
+                TemplateMessage(
+                    alt_text=f"確認刪除學科：{sub_name}",
+                    template=ConfirmTemplate(
+                        text=f"⚠️ 您確定要刪除學科【{sub_name}】嗎？\n刪除後將無法復原！",
+                        actions=[
+                            PostbackAction(
+                                label="確定刪除",
+                                data=f"action=confirm_del_sub&sub={sub_code}",
+                                display_text=f"確定刪除 {sub_name}"
+                            ),
+                            MessageAction(
+                                label="取消",
+                                text="取消刪除"
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+        return
+
+    # ==========================================
+    # 處理路線 F-2：管理員按下「確定刪除」後執行刪除並發送通知
+    # ==========================================
+    elif action == 'confirm_del_sub':
+        if user_id not in ADMIN_USER_IDS:
+            line_service.reply_text(reply_token, '⚠️ 只有系統管理員可以刪除學科。')
+            return
+
+        sub_code = data.get('sub')
+        
+        # 執行刪除
+        success, result_msg, admin_teacher_id = delete_subject_by_admin(sub_code, user_id, ADMIN_USER_IDS)
+        
+        if success:
+            sub_name = result_msg
+            
+            # 1. 回覆管理員刪除成功
+            line_service.reply_text(reply_token, f'🗑️ 已成功刪除學科：【{sub_name}】（代碼: {sub_code}）')
+
+            # 2. 如果該學科有指定管理老師，且不是管理員本人，主動發送通知給該管理老師
+            if admin_teacher_id and admin_teacher_id != user_id:
+                try:
+                    line_service.push_text(
+                        admin_teacher_id,
+                        f'⚠️ 【系統通知】\n您所管理的學科【{sub_name}】已被系統管理員刪除。如有疑問請與管理員聯繫。'
+                    )
+                except Exception as e:
+                    print(f"發送刪除通知給管理老師失敗: {e}")
+        else:
+            line_service.reply_text(reply_token, result_msg)
+            
+        return
+
+    # ==========================================
+    # 處理路線 G-1：管理老師選定學科後，顯示該科的老師清單按鈕
+    # ==========================================
+    elif action == 'remove_teacher_sub':
+        sub_code = data.get('sub')
+        if sub_code not in SUBJECT_INFO:
+            line_service.reply_text(reply_token, '⚠️ 找不到該學科。')
+            return
+
+        sub_name = SUBJECT_INFO[sub_code]['name']
+        teachers = SUBJECT_INFO[sub_code].get('teachers', [])
+        admin_t = SUBJECT_INFO[sub_code].get('admin_teacher')
+        other_teachers = [t for t in teachers if t != admin_t]
+
+        if not other_teachers:
+            line_service.reply_text(reply_token, f'⚠️ 【{sub_name}】目前除了您以外，沒有其他授課老師可移除。')
+            return
+
+        items = []
+        for t_id in other_teachers:
+            try:
+                # 取得老師的 LINE 暱稱
+                t_name = line_service.get_user_name(t_id)
+            except Exception:
+                t_name = f"老師 ({t_id[-4:]})"
+            
+            label_text = f"移除 {t_name}"
+            if len(label_text) > 20:
+                label_text = label_text[:17] + "..."
+
+            p_data = f"action=ask_remove_t&sub={sub_code}&target={t_id}"
+            
+            items.append(
+                QuickReplyItem(
+                    action=PostbackAction(
+                        label=label_text,
+                        data=p_data,
+                        display_text=f"移除 {t_name}"
+                    )
+                )
+            )
+
+        line_service.reply_text(
+            reply_token,
+            f"📋 請選擇您想要從【{sub_name}】移除的授課老師：",
+            quick_reply_items=items
+        )
+        return
+
+    # ==========================================
+    # 處理路線 G-2：點擊移除老師後，彈出 Confirm 確認按鈕
+    # ==========================================
+    elif action == 'ask_remove_t':
+        sub_code = data.get('sub')
+        target_id = data.get('target')
+
+        if sub_code not in SUBJECT_INFO:
+            line_service.reply_text(reply_token, '⚠️ 找不到該學科。')
+            return
+
+        sub_name = SUBJECT_INFO[sub_code]['name']
+
+        try:
+            target_name = line_service.get_user_name(target_id)
+        except Exception:
+            target_name = f"老師 ({target_id[-4:]})"
+
+        # 發送 Confirm 確認樣板
+        line_service.reply_message(
+            reply_token,
+            [
+                TemplateMessage(
+                    alt_text=f"確認移除老師：{target_name}",
+                    template=ConfirmTemplate(
+                        text=f"⚠️ 您確定要從【{sub_name}】中移除授課老師【{target_name}】嗎？",
+                        actions=[
+                            PostbackAction(
+                                label="確定移除",
+                                data=f"action=confirm_remove_t&sub={sub_code}&target={target_id}",
+                                display_text=f"確定移除 {target_name}"
+                            ),
+                            MessageAction(
+                                label="取消",
+                                text="取消移除"
+                            )
+                        ]
+                    )
+                )
+            ]
+        )
+        return
+
+    # ==========================================
+    # 處理路線 G-3：確認執行移除該老師，並發送通知
+    # ==========================================
+    elif action == 'confirm_remove_t':
+        sub_code = data.get('sub')
+        target_id = data.get('target')
+
+        # 假設您的 remove_teacher_from_subject 函式已定義
+        success, result_msg = remove_teacher_from_subject(sub_code, target_id, user_id, ADMIN_USER_IDS)
+        
+        if success:
+            sub_name = result_msg
+            
+            # 1. 回覆管理老師移除成功
+            line_service.reply_text(reply_token, f'✅ 已成功從【{sub_name}】中移除該位授課老師。')
+
+            # 2. 主動發送通知給被移除的老師
+            try:
+                line_service.push_text(
+                    target_id,
+                    f'⚠️ 【系統通知】\n您已被管理老師從學科【{sub_name}】的授課名單中移除。'
+                )
+            except Exception as e:
+                print(f"發送移除通知給老師失敗: {e}")
+        else:
+            line_service.reply_text(reply_token, result_msg)
+            
+        return
+
+    # ==========================================
+    # H-1：老師透過按鈕選定學科後，提示輸入學號與名字
+    # ==========================================
+    elif action == 'bind_select_sub':
+        sub_code = data.get('sub')
+        if sub_code not in SUBJECT_INFO:
+            line_service.reply_text(reply_token, '⚠️ 找不到該學科。')
+            return
+
+        sub_name = SUBJECT_INFO[sub_code]['name']
+        line_service.reply_text(
+            reply_token,
+            f'📌 目標學科：【{sub_name}】\n\n請直接在此聊天室輸入要給學生的【學號】與【名字】（中間用空格隔開）\n例如：`2601 王小明`\n\n（若想放棄，請輸入「取消」）'
+        )
+        return
