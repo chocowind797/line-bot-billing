@@ -1,5 +1,5 @@
 import threading
-from linebot.v3.messaging import QuickReplyItem, MessageAction, PostbackAction, TemplateMessage, ButtonsTemplate
+from linebot.v3.messaging import QuickReplyItem, MessageAction, PostbackAction, TemplateMessage, ButtonsTemplate, URIAction
 from config import (
     SUBJECT_INFO, ADMIN_USER_IDS, ALL_TEACHER_IDS,
     generate_subject_creation_key, create_new_subject_by_key,
@@ -420,6 +420,34 @@ def cmd_check_pending(event, user_id, text, parts):
         # LINE 限制一次最多發送 5 張卡片
         line_service.reply_message(reply_token, messages[:5])
 
+def cmd_get_example_xlsx():
+    # 權限檢查（確保只有管理員或老師能下載）
+    if user_id not in ADMIN_USER_IDS and not any(user_id in info.get('teachers', []) for info in SUBJECT_INFO.values()):
+        line_service.reply_text(event.reply_token, "⚠️ 您沒有權限下載此範例。")
+        return
+    
+    # 2. 設定您的公開下載網址（對應剛才在 app.py 設定的路由）
+    domain = "https://line-bot-billing.onrender.com" # 換成您的實際網址
+    download_url = f"{domain}/download/example-excel"
+
+    # 3. 建立帶有下載按鈕的卡片訊息
+    message = TemplateMessage(
+        alt_text="📥 請下載標準帳單範例 Excel",
+        template=ButtonsTemplate(
+            title="📊 帳單格式範例",
+            text="點擊下方按鈕即可直接下載標準的 Excel 範例檔。",
+            actions=[
+                URIAction(
+                    label="📥 點我下載範例 Excel",
+                    uri=download_url
+                )
+            ]
+        )
+    )
+
+    # 4. 回覆給老師
+    line_service.reply_message(event.reply_token, [message])
+
 # ==========================================
 # 4. Router 註冊表 (將文字對應到函式)
 # ==========================================
@@ -444,6 +472,7 @@ COMMAND_ROUTER = {
     '修改說明': cmd_edit_payment_info,
     '新增老師': cmd_add_teacher,
     '移除老師': cmd_remove_teacher,
+    '帳單範例': cmd_get_example_xlsx,
     
     # 管理員功能
     '新增學科': cmd_add_subject,
