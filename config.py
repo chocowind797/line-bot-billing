@@ -19,6 +19,7 @@ KEYS_FILE = os.path.join(CONFIG_FOLDER, 'keys.json') # 金鑰設定檔路徑
 PENDING_FILE = os.path.join(STAGING_FOLDER, 'pending_bindings.json') # 金鑰設定檔路徑
 STATE_FILE = os.path.join(STAGING_FOLDER, 'temp_states.json')
 EXAMPLE_FOLDER = os.path.join(DATA_FOLDER, 'example')
+DOMAIN = None
 
 # --------------------------
 # 暫存檔命名格式設定
@@ -56,7 +57,8 @@ def reload_config():
     load_dotenv(override=True)
 
     # 1. 更新 LINE 金鑰
-    global LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET
+    global LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET, DOMAIN
+    DOMAIN = os.getenv('DOMAIN', '')
     LINE_CHANNEL_ACCESS_TOKEN = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', '')
     LINE_CHANNEL_SECRET = os.getenv('LINE_CHANNEL_SECRET', '')
 

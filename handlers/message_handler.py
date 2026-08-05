@@ -1,7 +1,7 @@
 import threading
 from linebot.v3.messaging import QuickReplyItem, MessageAction, PostbackAction, TemplateMessage, ButtonsTemplate, URIAction
 from config import (
-    SUBJECT_INFO, ADMIN_USER_IDS, ALL_TEACHER_IDS,
+    SUBJECT_INFO, ADMIN_USER_IDS, ALL_TEACHER_IDS, DOMAIN,
     generate_subject_creation_key, create_new_subject_by_key,
     update_subject_payment_info, generate_invite_key, redeem_invite_key,
     delete_subject_by_admin
@@ -427,8 +427,7 @@ def cmd_get_example_xlsx(event, user_id, text, parts):
         return
     
     # 2. 設定您的公開下載網址（對應剛才在 app.py 設定的路由）
-    domain = "https://2e93-211-22-87-250.ngrok-free.app" # 換成您的實際網址
-    download_url = f"{domain}/download/example-excel?openExternalBrowser=1"
+    download_url = f"{DOMAIN}/download/example-excel?openExternalBrowser=1"
 
     # 3. 建立帶有下載按鈕的卡片訊息
     message = TemplateMessage(
