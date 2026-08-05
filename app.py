@@ -3,7 +3,7 @@ from flask import Flask, abort, request, send_from_directory
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, FileMessageContent, PostbackEvent
-from config import LINE_CHANNEL_SECRET, EXAMPLE_FOLDER
+from config import LINE_CHANNEL_SECRET
 
 # 匯入我們寫好的所有 Handlers 模組
 from handlers.message_handler import handle_text_message
@@ -22,10 +22,6 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 def health_check():
     """用來檢查機器人是否正常存活的健康檢查點"""
     return "Line Bot is alive!", 200
-
-@app.route('/download/example-excel', methods=['GET'])
-def download_example_excel():      
-    return send_from_directory(EXAMPLE_FOLDER, 'example.xlsx', as_attachment=True)
 
 @app.route('/callback', methods=['POST'])
 def callback():

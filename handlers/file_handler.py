@@ -2,7 +2,7 @@ import os
 import datetime
 from linebot.v3.webhooks import MessageEvent
 from linebot.v3.messaging import QuickReplyItem, PostbackAction
-from config import SUBJECT_INFO, ADMIN_USER_IDS, STAGING_FOLDER, TEMP_FILE_FORMAT
+from config import SUBJECT_INFO, ADMIN_USER_IDS, STAGING_FOLDER, TEMP_FILE_FORMAT, DATA_FOLDER
 from services import line_service
 
 def handle_file_message(event: MessageEvent):
