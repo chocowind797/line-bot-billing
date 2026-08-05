@@ -1,14 +1,20 @@
 # handlers/postback_handler.py
 import os
 import shutil
+import threading
 import datetime
 from urllib.parse import parse_qsl
 from linebot.v3.webhooks import PostbackEvent
-from config import SUBJECT_INFO, DATA_FOLDER, TEMP_FILE_FORMAT
-from services import line_service, data_service
-from linebot.v3.messaging import (
-    TemplateMessage, ConfirmTemplate, PostbackAction, MessageAction
+from config import (
+    SUBJECT_INFO, DATA_FOLDER, TEMP_FILE_FORMAT, ADMIN_USER_IDS,
+    delete_subject_by_admin, generate_invite_key, remove_teacher_from_subject
 )
+from services import line_service, data_service, billing_service
+from linebot.v3.messaging import (
+    TemplateMessage, ConfirmTemplate, PostbackAction, MessageAction,
+    QuickReply, QuickReplyItem
+)
+from utils import state_manager
 
 def handle_postback(event: PostbackEvent):
     """處理所有來自按鈕點擊 (Postback) 的事件"""
@@ -62,10 +68,10 @@ def handle_postback(event: PostbackEvent):
     # 處理路線 B-1. 處理老師同意家長綁定
     # ==========================================
     elif action == 'approve_bind':
-        parent_id = data.get('parent_id')
+        parent_id = data.get('uid')
         sub_code = data.get('sub')
-        student_id = data.get('student_id')
-        student_name = data.get('student_name')
+        student_id = data.get('sid')
+        student_name = data.get('sname')
         
         sub_name = SUBJECT_INFO.get(sub_code, {}).get('name', '未知科目')
         
@@ -109,9 +115,9 @@ def handle_postback(event: PostbackEvent):
     # 處理路線 B-2. 處理老師拒絕家長綁定
     # ==========================================
     elif action == 'reject_bind':
-        parent_id = data.get('parent_id')
+        parent_id = data.get('uid')
         sub_code = data.get('sub')
-        student_name = data.get('student_name')
+        student_name = data.get('sname')
         
         sub_name = SUBJECT_INFO.get(sub_code, {}).get('name', '未知科目')
         
@@ -149,6 +155,29 @@ def handle_postback(event: PostbackEvent):
             reply_token,
             f'⏳ 收到！正在背景為您處理【{sub_names_str}】的帳單（回溯 {lookback_months} 個月），完成後會主動回報，請稍候...'
         )
+        
+        # 2. 定義一個背景執行的包裝函式，用來接收回傳值並主動推播給老師
+        def run_billing_task():
+            try:
+                # 執行原本的商業邏輯並取得回傳結果
+                result_msg = billing_service.send_bills_logic(
+                    sub_code, target_student_id, lookback_months
+                )
+                
+                # 如果有回傳內容，主動推送給執行這項操作的老師
+                if result_msg:
+                    line_service.push_text(user_id, result_msg)
+                else:
+                    line_service.push_text(user_id, f'✅ 【{sub_names_str}】帳單背景執行完畢，但沒有產生額外回報內容。')
+                    
+            except Exception as e:
+                print(f"背景執行帳單發送失敗: {e}")
+                line_service.push_text(user_id, f'❌ 【{sub_names_str}】帳單執行過程中發生錯誤：\n{e}')
+
+        # 3. 透過 threading 執行包裝好的任務
+        bg_thread = threading.Thread(target=run_billing_task)
+        bg_thread.start()
+
         return
 
     # ==========================================
@@ -161,6 +190,14 @@ def handle_postback(event: PostbackEvent):
             return
             
         subject_name = SUBJECT_INFO[sub_code]['name']
+
+        # 寫入 PENDING_PAYMENT_EDIT 狀態
+        state_manager.set_state(
+            user_id,
+            'PENDING_PAYMENT_EDIT',
+            {"sub_code": sub_code}
+        )
+
         line_service.reply_text(
             reply_token,
             f'📝 您已選擇修改【{subject_name}】的繳費說明。\n\n請直接在聊天室輸入您想要設定的「新繳費說明內容」：'
@@ -397,6 +434,14 @@ def handle_postback(event: PostbackEvent):
             return
 
         sub_name = SUBJECT_INFO[sub_code]['name']
+
+        # 狀態寫入 state_manager，聊天室才抓得到！
+        state_manager.set_state(
+            user_id, 
+            'PENDING_STUDENT_BINDING', 
+            {"sub_code": sub_code}
+        )
+
         line_service.reply_text(
             reply_token,
             f'📌 目標學科：【{sub_name}】\n\n請直接在此聊天室輸入要給學生的【學號】與【名字】（中間用空格隔開）\n例如：`2601 王小明`\n\n（若想放棄，請輸入「取消」）'

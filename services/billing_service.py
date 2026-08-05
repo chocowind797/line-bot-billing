@@ -4,7 +4,7 @@ import os
 import time
 import pandas as pd
 from config import SUBJECT_INFO
-from services import line_service
+from services import line_service, data_service
 
 def get_current_month_excel_path(folder_path):
     # 【初始化檢查】確保該科目的專屬資料夾存在，如果不存在就自動建立一個
@@ -46,7 +46,7 @@ def get_current_month_excel_path(folder_path):
     return os.path.join(folder_path, f'薪資計算器{year_str}(NEW).xlsx')
 
 # 💡 注意這裡：拿掉了原本的 line_bot_api 參數
-def send_bills_logic(verified_bindings, subject_code, target_student_id=None, lookback_months=6):
+def send_bills_logic(subject_code, target_student_id=None, lookback_months=6):
     # 1. 取得該科目的相關資訊與資料夾路徑
     sub_info = SUBJECT_INFO.get(subject_code)
     if not sub_info:
@@ -54,6 +54,8 @@ def send_bills_logic(verified_bindings, subject_code, target_student_id=None, lo
     
     folder_path = sub_info['folder']
     subject_name = sub_info['name']
+
+    verified_bindings = data_service.load_verified_bindings()
     
     # 🎯 讀取該科目專屬的付款資訊（如果沒填則給予預設文字）
     custom_payment_info = sub_info.get(

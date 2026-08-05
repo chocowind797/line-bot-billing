@@ -17,6 +17,7 @@ DATA_FILE_PATH = os.path.join(CONFIG_FOLDER, 'bindings.json') # 家長綁定檔�
 SUBJECTS_FILE = os.path.join(CONFIG_FOLDER, 'subjects.json') # 科目設定檔路徑
 KEYS_FILE = os.path.join(CONFIG_FOLDER, 'keys.json') # 金鑰設定檔路徑
 PENDING_FILE = os.path.join(STAGING_FOLDER, 'pending_bindings.json') # 金鑰設定檔路徑
+STATE_FILE = os.path.join(STAGING_FOLDER, 'temp_states.json')
 
 # --------------------------
 # 暫存檔命名格式設定

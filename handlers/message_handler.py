@@ -39,8 +39,8 @@ def process_pending_states(event, user_id, text, state):
                f'（送出後即完成學生身分對應！）')
                
         line_service.reply_message(reply_token, [
-            {"type": "text", "text": msg},
-            {"type": "text", "text": f"我是{sub_code}-{student_no}--{student_name}"}
+            msg,
+            f"我是{sub_code}-{student_no}--{student_name}"
         ])
         state_manager.clear_state(user_id)
         return True
@@ -357,6 +357,8 @@ def cmd_remove_teacher(event, user_id, text, parts):
         line_service.reply_text(event.reply_token, "📋 請選擇您要管理哪一個學科的老師名單：", quick_reply_items=items)
 
 def cmd_check_pending(event, user_id, text, parts):
+    reply_token = event.reply_token
+    
     # 找出這個老師有參與（在 teachers 名單中或是 admin）的所有科目
     my_subjects = [
         c for c, i in SUBJECT_INFO.items() 
@@ -364,14 +366,14 @@ def cmd_check_pending(event, user_id, text, parts):
     ]
     
     if not my_subjects:
-        return line_service.reply_text(event.reply_token, '⚠️ 您目前沒有參與任何學科。')
+        return line_service.reply_text(reply_token, '⚠️ 您目前沒有參與任何學科。')
 
     pending_data = data_service.load_pending_bindings()
     
     if not pending_data:
-        return line_service.reply_text(event.reply_token, '📭 目前沒有任何等待審核中的家長綁定申請。')
+        return line_service.reply_text(reply_token, '📭 目前沒有任何等待審核中的家長綁定申請。')
 
-    result_lines = ["📋 【目前等待審核的綁定申請】\n"]
+    messages = []
     found_count = 0
 
     for parent_id, subs in pending_data.items():
@@ -381,19 +383,42 @@ def cmd_check_pending(event, user_id, text, parts):
                 sub_name = SUBJECT_INFO.get(sub_code, {}).get('name', sub_code)
                 parent_name = line_service.get_user_name(parent_id)
                 
-                result_lines.append(
-                    f"📚 科目：{sub_name}\n"
-                    f"👤 家長：{parent_name}\n"
-                    f"🎓 學生：{info['student_id']} {info['student_name']}\n"
-                    f"⏰ 時間：{info['timestamp']}\n"
-                    f"----------------------------------"
+                student_id = info['student_id']
+                student_name = info['student_name']
+                timestamp = info.get('timestamp', '未知時間')
+
+                # 組裝 Postback 資料（使用縮寫 pid, sid 以防超過 LINE 300 字元限制）
+                postback_approve = f"action=approve_bind&sub={sub_code}&uid={parent_id}&sid={student_id}&sname={student_name}"
+                postback_reject = f"action=reject_bind&sub={sub_code}&uid={parent_id}&sid={student_id}"
+
+                # 建立按鈕卡片
+                card = TemplateMessage(
+                    alt_text=f"審核通知：{student_name} 的綁定申請",
+                    template=ButtonsTemplate(
+                        title="📌 待審核綁定申請",
+                        text=f"📚 科目：{sub_name}\n👤 家長：{parent_name}\n🎓 學生：{student_id} {student_name}\n⏰ 時間：{timestamp}",
+                        actions=[
+                            PostbackAction(
+                                label="✅ 同意綁定",
+                                data=postback_approve,
+                                display_text=f"同意綁定 {student_name}"
+                            ),
+                            PostbackAction(
+                                label="❌ 拒絕申請",
+                                data=postback_reject,
+                                display_text=f"拒絕 {student_name} 的綁定"
+                            )
+                        ]
+                    )
                 )
+                messages.append(card)
                 found_count += 1
 
     if found_count == 0:
-        line_service.reply_text(event.reply_token, '📭 您負責的科目目前沒有等待審核中的申請。')
+        line_service.reply_text(reply_token, '📭 您負責的科目目前沒有等待審核中的申請。')
     else:
-        line_service.reply_text(event.reply_token, "\n".join(result_lines))
+        # LINE 限制一次最多發送 5 張卡片
+        line_service.reply_message(reply_token, messages[:5])
 
 # ==========================================
 # 4. Router 註冊表 (將文字對應到函式)
@@ -433,17 +458,22 @@ def handle_text_message(event):
     text = event.message.text.strip()
     parts = text.split()
 
-    # 1. 攔截二階段輸入狀態
+    # 攔截二階段輸入狀態
     state = state_manager.get_state(user_id)
     if state and process_pending_states(event, user_id, text, state):
         return
 
-    # 2. 攔截家長專屬綁定格式
+    # 攔截家長專屬綁定格式
     if text.startswith('我是') and '-' in text and '--' in text:
         if handle_parent_binding(event, user_id, text):
             return
 
-    # 3. 進入指令路由 (Router)
+    # 攔截所有類型的取消動作
+    if text in ['取消', '取消刪除', '取消移除', '取消操作']:
+        line_service.reply_text(event.reply_token, '❌ 已取消操作。')
+        return
+
+    # 進入指令路由 (Router)
     cmd = parts[0] # 取第一個詞作為指令
     action_func = COMMAND_ROUTER.get(cmd)
     

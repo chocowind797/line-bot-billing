@@ -1,6 +1,6 @@
 import os
 import json
-from config import DATA_FILE_PATH, PENDING_FILE
+from config import DATA_FILE_PATH, PENDING_FILE, STAGING_FOLDER
 
 def load_verified_bindings():
     """讀取家長學生綁定資料"""

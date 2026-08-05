@@ -1,7 +1,7 @@
 import os
 import json
+from config import STATE_FILE
 
-STATE_FILE = 'data/temp_states.json'
 
 def _load_states():
     if not os.path.exists(STATE_FILE):
