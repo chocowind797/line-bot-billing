@@ -93,6 +93,15 @@ def handle_postback(event: PostbackEvent):
             f'🎉 審核通過！\n您已成功綁定【{sub_name}】的學生：{student_name} ({student_id})。\n未來若有帳單產生，系統將自動通知您。'
         )
 
+        # 清除 pending 紀錄：
+        pending_data = data_service.load_pending_bindings()
+        if parent_id in pending_data and sub_code in pending_data[parent_id]:
+            del pending_data[parent_id][sub_code]
+            # 如果該家長沒有其他科目的申請了，就把家長整個 key 拔掉
+            if not pending_data[parent_id]:
+                del pending_data[parent_id]
+            data_service.save_pending_bindings(pending_data)
+
     # ==========================================
     # 3. 處理老師拒絕家長綁定
     # ==========================================
@@ -109,6 +118,15 @@ def handle_postback(event: PostbackEvent):
             parent_id, 
             f'⚠️ 綁定失敗\n您申請綁定【{sub_name}】的學生 {student_name}，老師已拒絕。\n請確認學號與姓名是否正確，或直接與老師聯繫。'
         )
+
+        # 清除 pending 紀錄：
+        pending_data = data_service.load_pending_bindings()
+        if parent_id in pending_data and sub_code in pending_data[parent_id]:
+            del pending_data[parent_id][sub_code]
+            # 如果該家長沒有其他科目的申請了，就把家長整個 key 拔掉
+            if not pending_data[parent_id]:
+                del pending_data[parent_id]
+            data_service.save_pending_bindings(pending_data)
 
     # ==========================================
     # 4. 刪除老師與刪除學科的確認 (預留擴充)

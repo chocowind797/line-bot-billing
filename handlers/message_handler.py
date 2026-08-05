@@ -10,7 +10,7 @@ from services import line_service, billing_service, data_service
 from utils import state_manager
 
 # ==========================================
-# 1. 狀態處理邏輯 (二階段輸入)
+# 狀態處理邏輯 (二階段輸入)
 # ==========================================
 def process_pending_states(event, user_id, text, state):
     reply_token = event.reply_token
@@ -75,7 +75,7 @@ def process_pending_states(event, user_id, text, state):
     return False
 
 # ==========================================
-# 2. 特殊格式處理 (家長綁定)
+# 特殊格式處理 (家長綁定)
 # ==========================================
 def handle_parent_binding(event, user_id, text):
     reply_token = event.reply_token
@@ -99,6 +99,20 @@ def handle_parent_binding(event, user_id, text):
             return True
 
         sub_name = SUBJECT_INFO[sub_code]['name']
+
+        # 將申請寫入等待審核的暫存檔中
+        from datetime import datetime
+        pending_data = data_service.load_pending_bindings()
+        if user_id not in pending_data:
+            pending_data[user_id] = {}
+        
+        pending_data[user_id][sub_code] = {
+            "student_id": s_id,
+            "student_name": s_name,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
+        }
+        data_service.save_pending_bindings(pending_data)
+
         line_service.reply_text(reply_token, f'⏳ 已收到綁定請求！\n申請綁定【{sub_name}】課程：\n學號：【{s_id}】\n姓名：【{s_name}】\n已通知該科老師，請等候確認。')
 
         # 💡 使用新版的安全參數格式
@@ -129,7 +143,7 @@ def handle_parent_binding(event, user_id, text):
     return True
 
 # ==========================================
-# 3. 指令路由對應函式 (Router Functions)
+# 指令路由對應函式 (Router Functions)
 # ==========================================
 def cmd_help(event, user_id, text, parts):
     # 1. 判斷使用者的身分權限
@@ -340,6 +354,45 @@ def cmd_remove_teacher(event, user_id, text, parts):
         items = [QuickReplyItem(action=PostbackAction(label=SUBJECT_INFO[c]['name'], data=f"action=remove_teacher_sub&sub={c}", display_text=f"管理【{SUBJECT_INFO[c]['name']}】老師")) for c in managed_subjects]
         line_service.reply_text(event.reply_token, "📋 請選擇您要管理哪一個學科的老師名單：", quick_reply_items=items)
 
+def cmd_check_pending(event, user_id, text, parts):
+    # 找出這個老師有參與（在 teachers 名單中或是 admin）的所有科目
+    my_subjects = [
+        c for c, i in SUBJECT_INFO.items() 
+        if not c.startswith('_') and (user_id in ADMIN_USER_IDS or user_id in i.get('teachers', []))
+    ]
+    
+    if not my_subjects:
+        return line_service.reply_text(event.reply_token, '⚠️ 您目前沒有參與任何學科。')
+
+    pending_data = data_service.load_pending_bindings()
+    
+    if not pending_data:
+        return line_service.reply_text(event.reply_token, '📭 目前沒有任何等待審核中的家長綁定申請。')
+
+    result_lines = ["📋 【目前等待審核的綁定申請】\n"]
+    found_count = 0
+
+    for parent_id, subs in pending_data.items():
+        for sub_code, info in subs.items():
+            # 如果這個科目是該老師有權限看到的
+            if sub_code in my_subjects:
+                sub_name = SUBJECT_INFO.get(sub_code, {}).get('name', sub_code)
+                parent_name = line_service.get_user_name(parent_id)
+                
+                result_lines.append(
+                    f"📚 科目：{sub_name}\n"
+                    f"👤 家長：{parent_name}\n"
+                    f"🎓 學生：{info['student_id']} {info['student_name']}\n"
+                    f"⏰ 時間：{info['timestamp']}\n"
+                    f"----------------------------------"
+                )
+                found_count += 1
+
+    if found_count == 0:
+        line_service.reply_text(event.reply_token, '📭 您負責的科目目前沒有等待審核中的申請。')
+    else:
+        line_service.reply_text(event.reply_token, "\n".join(result_lines))
+
 # ==========================================
 # 4. Router 註冊表 (將文字對應到函式)
 # ==========================================
@@ -354,6 +407,7 @@ COMMAND_ROUTER = {
     
     # 一般老師功能
     '產生綁定': cmd_generate_binding,
+    '查詢審核': cmd_check_pending,
     '加入老師': cmd_join_teacher,
 
     # 管理老師功能
