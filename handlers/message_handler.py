@@ -1,5 +1,5 @@
 import threading
-from linebot.v3.messaging import QuickReplyItem, MessageAction, PostbackAction, TemplateMessage, ButtonsTemplate, URIAction
+from linebot.v3.messaging import QuickReply, QuickReplyItem, MessageAction, PostbackAction, TemplateMessage, ButtonsTemplate, URIAction, TextMessage
 from config import (
     SUBJECT_INFO, ADMIN_USER_IDS, ALL_TEACHER_IDS,
     generate_subject_creation_key, create_new_subject_by_key,
@@ -257,10 +257,53 @@ def cmd_add_subject(event, user_id, text, parts):
     if err_msg:
         line_service.reply_text(event.reply_token, err_msg)
     else:
-        line_service.reply_message(event.reply_token, [
-            {"type": "text", "text": '🔑 已成功產生【新學科開通信鑰】：\n請將下方金鑰提供給新學科負責人，對方輸入 `開通學科 金鑰` 即可開始建立！'},
-            {"type": "text", "text": f'開通學科 {key}'}
-        ])
+        # 💡 修改點：判斷指令中是否夾帶了申請老師的 ID (長度大於 1)
+        if len(parts) > 1:
+            applicant_id = parts[1].strip()
+            
+            # 回覆給管理員 (執行者)
+            line_service.reply_text(
+                event.reply_token, 
+                f"✅ 已成功生成學科金鑰！\n\n開通學科 {key}\n\n(系統已同步將此指令推播給申請老師)"
+            )
+            
+            key_command = f"開通學科 {key}"
+            msg_for_teacher = (
+                "🎉 已通過您的開通申請！\n\n"
+                "請複製以下訊息並回傳\n"
+                "-------------------------------\n"
+                f"{key_command}\n"
+                "-------------------------------\n"
+                "或點擊下方按鈕，即可快速完成綁定與開通："
+            )
+                        
+            teacher_message = TextMessage(
+                text=msg_for_teacher,
+                quick_reply=QuickReply(
+                    items=[
+                        QuickReplyItem(
+                            action=MessageAction(
+                                label="✅ 點我一鍵開通", 
+                                text=key_command
+                            )
+                        )
+                    ]
+                )
+            )
+            
+            try:
+                # 這裡只要傳送包裝好的 teacher_message 物件即可
+                line_service.push_message(applicant_id, [teacher_message])
+            except Exception as e:
+                # 若發生錯誤（例如對方封鎖），回報給管理員
+                line_service.push_text(user_id, f"⚠️ 傳送給老師失敗，可能對方已封鎖機器人。\n錯誤訊息：{e}")
+                
+        else:
+            # 原本的邏輯：如果只是單純輸入「新增學科」，直接回傳給管理員即可
+            line_service.reply_message(event.reply_token, [
+                {"type": "text", "text": '🔑 已成功產生【新學科開通信鑰】：\n請將下方金鑰提供給新學科負責人，對方輸入 `開通學科 金鑰` 即可開始建立！'},
+                {"type": "text", "text": f'開通學科 {key}'}
+            ])
 
 def cmd_delete_subject(event, user_id, text, parts):
     if user_id not in ADMIN_USER_IDS:
@@ -418,9 +461,9 @@ def cmd_check_pending(event, user_id, text, parts):
         # LINE 限制一次最多發送 5 張卡片
         line_service.reply_message(reply_token, messages[:5])
 
-def cmd_activating(event, user_id, text, parts):
+def cmd_activating(event, user_id, text, parts):   
     # 1. 取得發送者的姓名與 ID
-    user_name = line_service.get_user_name(user_id)
+    user_name = line_service.get_user_name(user_id) if hasattr(line_service, 'get_user_name') else "未知用戶"
     
     # 2. 回覆使用者正在處理
     line_service.reply_text(
@@ -428,17 +471,32 @@ def cmd_activating(event, user_id, text, parts):
         "📩 您的開通申請已送出！已通知管理員進行審核，請稍候..."
     )
     
-    # 3. 組合要發送給管理員的通知訊息
-    admin_message = (
+    # 3. 組合要發送給管理員的通知訊息，並加入申請人 ID
+    admin_text = (
         f"🔔 【新的開通申請通知】\n\n"
         f"👤 申請人：{user_name}\n\n"
-        f"請儘速協助該用戶進行開通與權限設定！"
+        f"點擊下方按鈕，系統將自動生成金鑰並回傳給該老師！"
+    )
+    
+    admin_message = TextMessage(
+        text=admin_text,
+        quick_reply=QuickReply(
+            items=[
+                QuickReplyItem(
+                    action=MessageAction(
+                        label="新增學科", 
+                        text=f"新增學科 {user_id}"  # 💡 修改點：讓按鈕自動夾帶該老師的 ID
+                    )
+                )
+            ]
+        )
     )
     
     # 4. 迴圈發送給所有管理員 (ADMIN_USER_IDS)
     for admin_id in ADMIN_USER_IDS:
         try:
-            line_service.push_text(admin_id, admin_message)
+            # 💡 修改點：因為傳送的是 Message 物件，請改用 push_message
+            line_service.push_message(admin_id, [admin_message])
         except Exception as e:
             print(f"通知管理員 {admin_id} 失敗: {e}")
             

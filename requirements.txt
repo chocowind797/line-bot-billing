@@ -5,3 +5,5 @@ openpyxl
 apscheduler
 gunicorn
 python-dotenv
+defusedxml
+openpyxl 

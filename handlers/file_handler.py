@@ -2,7 +2,7 @@ import os
 import datetime
 from linebot.v3.webhooks import MessageEvent
 from linebot.v3.messaging import QuickReplyItem, PostbackAction
-from config import SUBJECT_INFO, ADMIN_USER_IDS, STAGING_FOLDER, TEMP_FILE_FORMAT, DATA_FOLDER
+from config import SUBJECT_INFO, ADMIN_USER_IDS, STAGING_FOLDER, TEMP_FILE_FORMAT, DATA_FOLDER, MAX_FILE_SIZE
 from services import line_service
 
 def handle_file_message(event: MessageEvent):
@@ -15,6 +15,18 @@ def handle_file_message(event: MessageEvent):
     # 1. 檢查檔案格式是否為 Excel (.xlsx)
     if not original_file_name.endswith('.xlsx'):
         line_service.reply_text(reply_token, '格式錯誤！請上傳 .xlsx 結尾的 Excel 檔案。')
+        return
+
+    # 1. 攔截超過 20MB 的檔案
+    # 使用 getattr 是為了避免某些舊版 SDK 取不到 file_size 屬性而報錯
+    file_size = getattr(event.message, 'file_size', 0) 
+    
+    if file_size > MAX_FILE_SIZE:
+        # 直接阻擋，連下載都不下載，節省伺服器資源
+        line_service.reply_text(
+            event.reply_token, 
+            f"⚠️ 您上傳的檔案過大 ({round(file_size/1024/1024, 2)} MB)！\n系統限制最大為 20MB，請調整後重新上傳。"
+        )
         return
 
     # 2. 判斷該使用者可以上傳的科目清單

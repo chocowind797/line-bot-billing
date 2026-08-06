@@ -88,7 +88,7 @@ def send_bills_logic(subject_code, target_student_id=None, lookback_months=6):
         # ==========================================
         # 讀取 Excel with 區塊，確保 Excel 讀取完畢後立刻釋放檔案鎖定
         # ==========================================
-        with pd.ExcelFile(excel_file_path) as xls:
+        with pd.ExcelFile(excel_file_path, engine='openpyxl') as xls:
             # 動態依照輸入的月份進行回溯，如果 lookback_months 是 3，就會是 range(2, -1, -1)
             for i in range(lookback_months - 1, -1, -1):
                 calc_month = target_month - i

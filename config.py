@@ -19,10 +19,8 @@ KEYS_FILE = os.path.join(CONFIG_FOLDER, 'keys.json') # 金鑰設定檔路徑
 PENDING_FILE = os.path.join(STAGING_FOLDER, 'pending_bindings.json') # 金鑰設定檔路徑
 STATE_FILE = os.path.join(STAGING_FOLDER, 'temp_states.json')
 
-# --------------------------
-# 暫存檔命名格式設定
-# --------------------------
-TEMP_FILE_FORMAT = "temp_{msg_id}.xlsx"
+TEMP_FILE_FORMAT = "temp_{msg_id}.xlsx" # 暫存檔命名格式設定
+MAX_FILE_SIZE = 20 * 1024 * 1024 # xlsx檔案大小上限
 
 # 確保資料夾存在
 os.makedirs(DATA_FOLDER, exist_ok=True)
